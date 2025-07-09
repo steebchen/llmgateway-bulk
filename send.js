@@ -2,94 +2,43 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 
-const GITHUB_TOKEN = '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'; // Replace with your token
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // Replace with your token
 const KEYWORD = 'OPENROUTER'; // Replace with your keyword
 const MAX_RESULTS = 100;
 const PER_PAGE = 100; // GitHub API max per page
 const COMMITS_PER_REPO = 30; // Number of recent commits to fetch per repository
 const DB_PATH = path.join(__dirname, 'contributor_emails.db'); // Path to SQLite database
 
-// Initialize SQLite database
-const db = new sqlite3.Database(DB_PATH, (err) => {
-	if (err) {
-		console.error(`Error opening database: ${err.message}`);
-		process.exit(1);
-	}
-	console.log(`Connected to SQLite database at ${DB_PATH}`);
-
-	// Create emails table if it doesn't exist
-	db.run(`
-		CREATE TABLE IF NOT EXISTS emails (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			email TEXT UNIQUE,
-			ignore BOOLEAN,
-			approved BOOLEAN DEFAULT 0,
-			sent BOOLEAN DEFAULT 0,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)
-	`, (err) => {
-		if (err) {
-			console.error(`Error creating table: ${err.message}`);
-			process.exit(1);
-		}
-
-		// Create state table to store the last request information
-		db.run(`
-			CREATE TABLE IF NOT EXISTS request_state (
-				id INTEGER PRIMARY KEY CHECK (id = 1),
-				keyword TEXT,
-				current_page INTEGER,
-				last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-			)
-		`, (err) => {
+// Utility functions to promisify sqlite3 operations
+function openDatabase(dbPath) {
+	return new Promise((resolve, reject) => {
+		const database = new sqlite3.Database(dbPath, (err) => {
 			if (err) {
-				console.error(`Error creating state table: ${err.message}`);
-				process.exit(1);
+				reject(err);
+			} else {
+				resolve(database);
 			}
-			console.log('Database initialized successfully');
 		});
 	});
-});
-
-// Function to save email to database
-function saveEmail(email) {
-	// Determine if email should be ignored (contains "noreply" or doesn't have @)
-	const shouldIgnore = email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@');
-
-	try {
-		// Use INSERT OR IGNORE to prevent duplicate entries
-		// This is more efficient than checking first and then inserting
-		const stmt = db.prepare('INSERT OR IGNORE INTO emails (email, ignore) VALUES (?, ?)');
-		stmt.run(email, shouldIgnore ? 1 : 0, function(err) {
-			if (err) {
-				console.error(`  Error saving email ${email}: ${err.message}`);
-				return;
-			}
-
-			// this.changes tells us if a row was inserted (1) or not (0)
-			if (this.changes === 0) {
-				console.log(`  Email already exists in database: ${email}`);
-			} else {
-				if (shouldIgnore) {
-					console.log(`  Saved noreply email with ignore flag: ${email}`);
-				} else {
-					console.log(`  Saved email: ${email}`);
-				}
-			}
-		});
-		stmt.finalize();
-	} catch (error) {
-		console.error(`  Error saving email ${email}: ${error.message}`);
-	}
 }
 
-// Function to get saved state from database
-function getSavedState() {
+function runQuery(db, query, params = []) {
 	return new Promise((resolve, reject) => {
-		db.get('SELECT keyword, current_page FROM request_state WHERE id = 1', (err, row) => {
+		db.run(query, params, function(err) {
 			if (err) {
-				console.error(`Error getting saved state: ${err.message}`);
-				resolve(null);
+				reject(err);
+			} else {
+				resolve(this);
+			}
+		});
+	});
+}
+
+function getQuery(db, query, params = []) {
+	return new Promise((resolve, reject) => {
+		db.get(query, params, (err, row) => {
+			if (err) {
+				reject(err);
 			} else {
 				resolve(row);
 			}
@@ -97,23 +46,137 @@ function getSavedState() {
 	});
 }
 
-// Function to save current state to database
-function saveState(keyword, page) {
+function prepareStatement(db, query) {
+	return db.prepare(query);
+}
+
+function runStatement(stmt, params = []) {
 	return new Promise((resolve, reject) => {
-		db.run(
-			'INSERT OR REPLACE INTO request_state (id, keyword, current_page, last_updated) VALUES (1, ?, ?, CURRENT_TIMESTAMP)',
-			[keyword, page],
-			function(err) {
-				if (err) {
-					console.error(`Error saving state: ${err.message}`);
-					reject(err);
-				} else {
-					console.log(`Saved state: keyword=${keyword}, page=${page}`);
-					resolve();
-				}
+		stmt.run(...params, function(err) {
+			if (err) {
+				reject(err);
+			} else {
+				resolve(this);
 			}
-		);
+		});
 	});
+}
+
+function finalizeStatement(stmt) {
+	return new Promise((resolve, reject) => {
+		stmt.finalize(err => {
+			if (err) {
+				reject(err);
+			} else {
+				resolve();
+			}
+		});
+	});
+}
+
+function closeDatabase(db) {
+	return new Promise((resolve, reject) => {
+		db.close((err) => {
+			if (err) {
+				reject(err);
+			} else {
+				resolve();
+			}
+		});
+	});
+}
+
+// Initialize SQLite database
+let db;
+
+async function initializeDatabase() {
+	try {
+		db = await openDatabase(DB_PATH);
+		console.log(`Connected to SQLite database at ${DB_PATH}`);
+
+		// Create emails table if it doesn't exist
+		await runQuery(db, `
+			CREATE TABLE IF NOT EXISTS emails (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				email TEXT UNIQUE,
+				ignore BOOLEAN,
+				approved BOOLEAN DEFAULT 0,
+				sent BOOLEAN DEFAULT 0,
+				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			)
+		`);
+
+		// Create state table to store the last request information
+		await runQuery(db, `
+			CREATE TABLE IF NOT EXISTS request_state (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				keyword TEXT,
+				current_page INTEGER,
+				last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			)
+		`);
+
+		console.log('Database initialized successfully');
+	} catch (err) {
+		console.error(`Error initializing database: ${err.message}`);
+		process.exit(1);
+	}
+}
+
+// Initialize the database
+initializeDatabase();
+
+// Function to save email to database
+async function saveEmail(email) {
+	// Determine if email should be ignored (contains "noreply" or doesn't have @)
+	const shouldIgnore = email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@');
+
+	try {
+		// Use INSERT OR IGNORE to prevent duplicate entries
+		// This is more efficient than checking first and then inserting
+		const stmt = prepareStatement(db, 'INSERT OR IGNORE INTO emails (email, ignore) VALUES (?, ?)');
+		const result = await runStatement(stmt, [email, shouldIgnore ? 1 : 0]);
+
+		// result.changes tells us if a row was inserted (1) or not (0)
+		if (result.changes === 0) {
+			console.log(`  Email already exists in database: ${email}`);
+		} else {
+			if (shouldIgnore) {
+				console.log(`  Saved noreply email with ignore flag: ${email}`);
+			} else {
+				console.log(`  Saved email: ${email}`);
+			}
+		}
+
+		await finalizeStatement(stmt);
+	} catch (error) {
+		console.error(`  Error saving email ${email}: ${error.message}`);
+	}
+}
+
+// Function to get saved state from database
+async function getSavedState() {
+	try {
+		return await getQuery(db, 'SELECT keyword, current_page FROM request_state WHERE id = 1');
+	} catch (err) {
+		console.error(`Error getting saved state: ${err.message}`);
+		return null;
+	}
+}
+
+// Function to save current state to database
+async function saveState(keyword, page) {
+	try {
+		await runQuery(
+			db,
+			'INSERT OR REPLACE INTO request_state (id, keyword, current_page, last_updated) VALUES (1, ?, ?, CURRENT_TIMESTAMP)',
+			[keyword, page]
+		);
+		console.log(`Saved state: keyword=${keyword}, page=${page}`);
+	} catch (err) {
+		console.error(`Error saving state: ${err.message}`);
+		throw err;
+	}
 }
 
 // Enhanced version that also provides commit statistics
@@ -198,6 +261,8 @@ async function searchRepositoriesWithStats(keyword) {
 
 							// Save to database when first encountered
 							// This will handle duplicate prevention internally
+							// We don't need to await this since we don't need to wait for each email to be saved
+							// before processing the next one, and the function handles errors internally
 							saveEmail(email);
 						}
 
@@ -258,19 +323,23 @@ async function searchRepositoriesWithStats(keyword) {
 // Run the enhanced version
 console.log('Starting contributor analysis...');
 searchRepositoriesWithStats(KEYWORD)
-	.then(() => {
+	.then(async () => {
 		// Close the database connection when done
 		console.log('Closing database connection...');
-		db.close((err) => {
-			if (err) {
-				console.error(`Error closing database: ${err.message}`);
-				process.exit(1);
-			}
+		try {
+			await closeDatabase(db);
 			console.log('Database connection closed');
-		});
+		} catch (err) {
+			console.error(`Error closing database: ${err.message}`);
+			process.exit(1);
+		}
 	})
-	.catch(error => {
+	.catch(async error => {
 		console.error('Error in main process:', error);
 		// Ensure database is closed even on error
-		db.close();
+		try {
+			await closeDatabase(db);
+		} catch (err) {
+			console.error(`Error closing database: ${err.message}`);
+		}
 	});
