@@ -1,0 +1,151 @@
+const fs = require('fs');
+const path = require('path');
+
+const GITHUB_TOKEN = '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'; // Replace with your token
+const KEYWORD = 'OPENROUTER'; // Replace with your keyword
+const MAX_RESULTS = 100;
+const PER_PAGE = 100; // GitHub API max per page
+const COMMITS_PER_REPO = 30; // Number of recent commits to fetch per repository
+const EMAILS_FILE = '/Users/steebchen/contributor_emails.txt'; // File to save emails
+
+// Function to save email to file
+function saveEmailToFile(email) {
+	// Check if email contains "noreply" (case insensitive)
+	if (email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@')) {
+		console.log(`  Skipping noreply email: ${email}`);
+		return;
+	}
+
+	const emailEntry = `${email}\n`;
+
+	try {
+		fs.appendFileSync(EMAILS_FILE, emailEntry);
+		console.log(`  Saved email: ${email}`);
+	} catch (error) {
+		console.error(`  Error saving email ${email}: ${error.message}`);
+	}
+}
+
+// Enhanced version that also provides commit statistics
+async function searchRepositoriesWithStats(keyword) {
+	const baseUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(keyword)}`;
+	const headers = {
+		'Accept': 'application/vnd.github+json',
+		'Authorization': `Bearer ${GITHUB_TOKEN}`
+	};
+
+	let allRepos = [];
+	let page = 1;
+	let hasMoreResults = true;
+
+
+	try {
+		while (hasMoreResults && allRepos.length < MAX_RESULTS) {
+			const url = `${baseUrl}&per_page=${PER_PAGE}&page=${page}`;
+			console.log(`Fetching repositories page ${page}...`);
+
+			const response = await fetch(url, { headers });
+			if (!response.ok) {
+				throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+			}
+
+			const data = await response.json();
+			const remainingSlots = MAX_RESULTS - allRepos.length;
+			const reposToAdd = data.items.slice(0, remainingSlots);
+			allRepos.push(...reposToAdd);
+
+			hasMoreResults = data.items.length === PER_PAGE && allRepos.length < MAX_RESULTS;
+			page++;
+
+			if (hasMoreResults) {
+				await new Promise(resolve => setTimeout(resolve, 100));
+			}
+		}
+
+		console.log(`\nFound ${allRepos.length} repositories`);
+
+		const contributorStats = new Map(); // email -> { count, repos, lastCommitDate }
+
+		for (const repo of allRepos) {
+			console.log(`Fetching commits for ${repo.full_name}...`);
+
+			try {
+				const commitsUrl = `https://api.github.com/repos/${repo.full_name}/commits?per_page=${COMMITS_PER_REPO}`;
+				const commitsResponse = await fetch(commitsUrl, { headers });
+
+				if (!commitsResponse.ok) {
+					console.log(`  Skipping ${repo.full_name} (${commitsResponse.status})`);
+					continue;
+				}
+
+				const commits = await commitsResponse.json();
+
+				// Collect contributor statistics
+				commits.forEach(commit => {
+					if (commit.commit && commit.commit.author && commit.commit.author.email) {
+						const email = commit.commit.author.email;
+						const commitDate = new Date(commit.commit.author.date);
+
+						// Skip noreply emails
+						if (email.toLowerCase().includes('noreply')) {
+							return;
+						}
+
+						if (!contributorStats.has(email)) {
+							contributorStats.set(email, {
+								count: 0,
+								repos: new Set(),
+								lastCommitDate: commitDate
+							});
+
+							// Save to file when first encountered
+							saveEmailToFile(email);
+						}
+
+						const stats = contributorStats.get(email);
+						stats.count++;
+						stats.repos.add(repo.full_name);
+
+						if (commitDate > stats.lastCommitDate) {
+							stats.lastCommitDate = commitDate;
+						}
+					}
+				});
+
+				console.log(`  Found ${commits.length} commits`);
+
+			} catch (error) {
+				console.log(`  Error fetching commits for ${repo.full_name}: ${error.message}`);
+			}
+
+			await new Promise(resolve => setTimeout(resolve, 200));
+		}
+
+		// Display detailed results
+		console.log(`\n=== CONTRIBUTOR STATISTICS ===`);
+		console.log(`Total unique contributors: ${contributorStats.size}`);
+		console.log(`Emails saved to: ${path.resolve(EMAILS_FILE)}`);
+
+		// Sort by commit count (most active first)
+		const sortedContributors = Array.from(contributorStats.entries())
+			.sort((a, b) => b[1].count - a[1].count);
+
+		console.log(`\nTop contributors by commit count:`);
+		sortedContributors.forEach(([email, stats], index) => {
+			console.log(`${index + 1}. ${email}`);
+			console.log(`   Commits: ${stats.count}`);
+			console.log(`   Repositories: ${stats.repos.size}`);
+			console.log(`   Last commit: ${stats.lastCommitDate.toISOString().split('T')[0]}`);
+			console.log('');
+		});
+
+		return sortedContributors.map(([email]) => email);
+
+	} catch (error) {
+		console.error('Error fetching data:', error.message);
+	}
+}
+
+// Run the enhanced version
+console.log('Starting contributor analysis...');
+void searchRepositoriesWithStats(KEYWORD);
