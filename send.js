@@ -23,6 +23,8 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE,
             ignore BOOLEAN,
+            approved BOOLEAN DEFAULT 0,
+            sent BOOLEAN DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     `, (err) => {
