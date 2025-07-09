@@ -1,29 +1,58 @@
 const fs = require('fs');
 const path = require('path');
+const sqlite3 = require('sqlite3').verbose();
 
 const GITHUB_TOKEN = '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'; // Replace with your token
 const KEYWORD = 'OPENROUTER'; // Replace with your keyword
 const MAX_RESULTS = 100;
 const PER_PAGE = 100; // GitHub API max per page
 const COMMITS_PER_REPO = 30; // Number of recent commits to fetch per repository
-const EMAILS_FILE = '/Users/steebchen/contributor_emails.txt'; // File to save emails
+const DB_PATH = path.join(__dirname, 'contributor_emails.db'); // Path to SQLite database
 
-// Function to save email to file
-function saveEmailToFile(email) {
-	// Check if email contains "noreply" (case insensitive)
-	if (email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@')) {
-		console.log(`  Skipping noreply email: ${email}`);
-		return;
-	}
+// Initialize SQLite database
+const db = new sqlite3.Database(DB_PATH, (err) => {
+    if (err) {
+        console.error(`Error opening database: ${err.message}`);
+        process.exit(1);
+    }
+    console.log(`Connected to SQLite database at ${DB_PATH}`);
 
-	const emailEntry = `${email}\n`;
+    // Create emails table if it doesn't exist
+    db.run(`
+        CREATE TABLE IF NOT EXISTS emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE,
+            ignore BOOLEAN,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `, (err) => {
+        if (err) {
+            console.error(`Error creating table: ${err.message}`);
+            process.exit(1);
+        }
+        console.log('Database initialized successfully');
+    });
+});
 
-	try {
-		fs.appendFileSync(EMAILS_FILE, emailEntry);
-		console.log(`  Saved email: ${email}`);
-	} catch (error) {
-		console.error(`  Error saving email ${email}: ${error.message}`);
-	}
+// Function to save email to database
+function saveEmail(email) {
+    // Determine if email should be ignored (contains "noreply" or doesn't have @)
+    const shouldIgnore = email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@');
+
+    if (shouldIgnore) {
+        console.log(`  Saving noreply email with ignore flag: ${email}`);
+    } else {
+        console.log(`  Saving email: ${email}`);
+    }
+
+    try {
+        // Insert or ignore if the email already exists
+        const stmt = db.prepare('INSERT OR IGNORE INTO emails (email, ignore) VALUES (?, ?)');
+        stmt.run(email, shouldIgnore ? 1 : 0);
+        stmt.finalize();
+    } catch (error) {
+        console.error(`  Error saving email ${email}: ${error.message}`);
+    }
 }
 
 // Enhanced version that also provides commit statistics
@@ -86,20 +115,17 @@ async function searchRepositoriesWithStats(keyword) {
 						const email = commit.commit.author.email;
 						const commitDate = new Date(commit.commit.author.date);
 
-						// Skip noreply emails
-						if (email.toLowerCase().includes('noreply')) {
-							return;
-						}
-
+						// Include all emails in stats, even noreply ones
 						if (!contributorStats.has(email)) {
 							contributorStats.set(email, {
 								count: 0,
 								repos: new Set(),
-								lastCommitDate: commitDate
+								lastCommitDate: commitDate,
+								isNoreply: email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@')
 							});
 
-							// Save to file when first encountered
-							saveEmailToFile(email);
+							// Save to database when first encountered
+							saveEmail(email);
 						}
 
 						const stats = contributorStats.get(email);
@@ -124,7 +150,7 @@ async function searchRepositoriesWithStats(keyword) {
 		// Display detailed results
 		console.log(`\n=== CONTRIBUTOR STATISTICS ===`);
 		console.log(`Total unique contributors: ${contributorStats.size}`);
-		console.log(`Emails saved to: ${path.resolve(EMAILS_FILE)}`);
+		console.log(`Emails saved to SQLite database: ${DB_PATH}`);
 
 		// Sort by commit count (most active first)
 		const sortedContributors = Array.from(contributorStats.entries())
@@ -132,10 +158,11 @@ async function searchRepositoriesWithStats(keyword) {
 
 		console.log(`\nTop contributors by commit count:`);
 		sortedContributors.forEach(([email, stats], index) => {
-			console.log(`${index + 1}. ${email}`);
+			console.log(`${index + 1}. ${email}${stats.isNoreply ? ' [NOREPLY]' : ''}`);
 			console.log(`   Commits: ${stats.count}`);
 			console.log(`   Repositories: ${stats.repos.size}`);
 			console.log(`   Last commit: ${stats.lastCommitDate.toISOString().split('T')[0]}`);
+			console.log(`   Ignore flag: ${stats.isNoreply ? 'Yes' : 'No'}`);
 			console.log('');
 		});
 
@@ -148,4 +175,20 @@ async function searchRepositoriesWithStats(keyword) {
 
 // Run the enhanced version
 console.log('Starting contributor analysis...');
-void searchRepositoriesWithStats(KEYWORD);
+searchRepositoriesWithStats(KEYWORD)
+    .then(() => {
+        // Close the database connection when done
+        console.log('Closing database connection...');
+        db.close((err) => {
+            if (err) {
+                console.error(`Error closing database: ${err.message}`);
+                process.exit(1);
+            }
+            console.log('Database connection closed');
+        });
+    })
+    .catch(error => {
+        console.error('Error in main process:', error);
+        // Ensure database is closed even on error
+        db.close();
+    });
