@@ -39,16 +39,27 @@ function saveEmail(email) {
     // Determine if email should be ignored (contains "noreply" or doesn't have @)
     const shouldIgnore = email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@');
 
-    if (shouldIgnore) {
-        console.log(`  Saving noreply email with ignore flag: ${email}`);
-    } else {
-        console.log(`  Saving email: ${email}`);
-    }
-
     try {
-        // Insert or ignore if the email already exists
+        // Use INSERT OR IGNORE to prevent duplicate entries
+        // This is more efficient than checking first and then inserting
         const stmt = db.prepare('INSERT OR IGNORE INTO emails (email, ignore) VALUES (?, ?)');
-        stmt.run(email, shouldIgnore ? 1 : 0);
+        stmt.run(email, shouldIgnore ? 1 : 0, function(err) {
+            if (err) {
+                console.error(`  Error saving email ${email}: ${err.message}`);
+                return;
+            }
+
+            // this.changes tells us if a row was inserted (1) or not (0)
+            if (this.changes === 0) {
+                console.log(`  Email already exists in database: ${email}`);
+            } else {
+                if (shouldIgnore) {
+                    console.log(`  Saved noreply email with ignore flag: ${email}`);
+                } else {
+                    console.log(`  Saved email: ${email}`);
+                }
+            }
+        });
         stmt.finalize();
     } catch (error) {
         console.error(`  Error saving email ${email}: ${error.message}`);
@@ -125,6 +136,7 @@ async function searchRepositoriesWithStats(keyword) {
 							});
 
 							// Save to database when first encountered
+							// This will handle duplicate prevention internally
 							saveEmail(email);
 						}
 
