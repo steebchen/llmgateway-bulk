@@ -32,7 +32,22 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
             console.error(`Error creating table: ${err.message}`);
             process.exit(1);
         }
-        console.log('Database initialized successfully');
+
+        // Create state table to store the last request information
+        db.run(`
+            CREATE TABLE IF NOT EXISTS request_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                keyword TEXT,
+                current_page INTEGER,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `, (err) => {
+            if (err) {
+                console.error(`Error creating state table: ${err.message}`);
+                process.exit(1);
+            }
+            console.log('Database initialized successfully');
+        });
     });
 });
 
@@ -68,6 +83,39 @@ function saveEmail(email) {
     }
 }
 
+// Function to get saved state from database
+function getSavedState() {
+    return new Promise((resolve, reject) => {
+        db.get('SELECT keyword, current_page FROM request_state WHERE id = 1', (err, row) => {
+            if (err) {
+                console.error(`Error getting saved state: ${err.message}`);
+                resolve(null);
+            } else {
+                resolve(row);
+            }
+        });
+    });
+}
+
+// Function to save current state to database
+function saveState(keyword, page) {
+    return new Promise((resolve, reject) => {
+        db.run(
+            'INSERT OR REPLACE INTO request_state (id, keyword, current_page, last_updated) VALUES (1, ?, ?, CURRENT_TIMESTAMP)',
+            [keyword, page],
+            function(err) {
+                if (err) {
+                    console.error(`Error saving state: ${err.message}`);
+                    reject(err);
+                } else {
+                    console.log(`Saved state: keyword=${keyword}, page=${page}`);
+                    resolve();
+                }
+            }
+        );
+    });
+}
+
 // Enhanced version that also provides commit statistics
 async function searchRepositoriesWithStats(keyword) {
 	const baseUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(keyword)}`;
@@ -79,6 +127,13 @@ async function searchRepositoriesWithStats(keyword) {
 	let allRepos = [];
 	let page = 1;
 	let hasMoreResults = true;
+
+	// Check for saved state
+	const savedState = await getSavedState();
+	if (savedState && savedState.keyword === keyword) {
+	    page = savedState.current_page;
+	    console.log(`Resuming from page ${page} for keyword "${keyword}"`);
+	}
 
 
 	try {
@@ -97,6 +152,10 @@ async function searchRepositoriesWithStats(keyword) {
 			allRepos.push(...reposToAdd);
 
 			hasMoreResults = data.items.length === PER_PAGE && allRepos.length < MAX_RESULTS;
+
+			// Save current state before moving to next page
+			await saveState(keyword, page);
+
 			page++;
 
 			if (hasMoreResults) {
@@ -180,10 +239,19 @@ async function searchRepositoriesWithStats(keyword) {
 			console.log('');
 		});
 
+		// Reset state to page 1 after successful completion
+		await saveState(keyword, 1);
+		console.log('Processing complete. State reset to page 1 for next run.');
+
 		return sortedContributors.map(([email]) => email);
 
 	} catch (error) {
 		console.error('Error fetching data:', error.message);
+		// Save current state to allow resuming from this point
+		if (page > 1) {
+			await saveState(keyword, page);
+			console.log(`Error occurred. State saved at page ${page} for resuming later.`);
+		}
 	}
 }
 
