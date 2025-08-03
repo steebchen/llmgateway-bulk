@@ -11,6 +11,9 @@ importers:
       dotenv:
         specifier: ^17.2.1
         version: 17.2.1
+      nodemailer:
+        specifier: ^7.0.5
+        version: 7.0.5
       sqlite3:
         specifier: ^5.1.7
         version: 5.1.7
@@ -319,6 +322,10 @@ packages:
     resolution: {integrity: sha512-olTJRgUtAb/hOXG0E93wZDs5YiJlgbXxTwQAFHyNlRsXQnYzUaF2aGgujZbw+hR8aF4ZG/rST57bWMWD16jr9w==}
     engines: {node: '>= 10.12.0'}
     hasBin: true
+
+  nodemailer@7.0.5:
+    resolution: {integrity: sha512-nsrh2lO3j4GkLLXoeEksAMgAOqxOv6QumNRVQTJwKH4nuiww6iC2y7GyANs9kRAxCexg3+lTWM3PZ91iLlVjfg==}
+    engines: {node: '>=6.0.0'}
 
   nopt@5.0.0:
     resolution: {integrity: sha512-Tbj67rffqceeLpcRXrT7vKAN8CwfPeIBgM7E6iBkmKLV7bEMwpGgYLGv0jACUsECaa/vuxP0IjEont6umdMgtQ==}
@@ -853,6 +860,8 @@ snapshots:
       - bluebird
       - supports-color
     optional: true
+
+  nodemailer@7.0.5: {}
 
   nopt@5.0.0:
     dependencies:
