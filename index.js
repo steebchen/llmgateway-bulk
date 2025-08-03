@@ -236,12 +236,13 @@ async function searchRepositoriesWithStats(keyword) {
 		}
 		const initialData = await initialResponse.json();
 		const totalCount = Math.min(initialData.total_count, MAX_RESULTS);
-		const totalPages = Math.ceil(totalCount / PER_PAGE);
-		console.log(`Total repositories found: ${initialData.total_count}, processing up to ${totalCount} (${totalPages} pages)`);
+		const actualTotalPages = Math.ceil(Math.min(initialData.total_count, 1000) / PER_PAGE); // GitHub's 1000 limit
+		const targetPages = Math.ceil(totalCount / PER_PAGE);
+		console.log(`Total repositories found: ${initialData.total_count}, processing up to ${totalCount} (${targetPages} pages of ${actualTotalPages} available)`);
 
 		while (hasMoreResults && allRepos.length < MAX_RESULTS) {
 			const url = `${baseUrl}&per_page=${PER_PAGE}&page=${page}`;
-			console.log(`Fetching repositories page ${page} of ${totalPages}...`);
+			console.log(`Fetching repositories page ${page} of ${actualTotalPages}...`);
 
 			const response = await fetch(url, { headers });
 			if (!response.ok) {
