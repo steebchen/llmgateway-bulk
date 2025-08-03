@@ -115,6 +115,18 @@ async function initializeDatabase() {
 			)
 		`);
 
+		// Create email_repositories junction table for many-to-many relationship
+		await runQuery(db, `
+			CREATE TABLE IF NOT EXISTS email_repositories (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				email TEXT,
+				repo_name TEXT,
+				first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (email) REFERENCES emails (email),
+				UNIQUE(email, repo_name)
+			)
+		`);
+
 		// Add repo_name column if it doesn't exist (for existing databases)
 		try {
 			await runQuery(db, `ALTER TABLE emails ADD COLUMN repo_name TEXT`);
@@ -135,6 +147,8 @@ async function initializeDatabase() {
 				date_range TEXT,
 				date_segments TEXT,
 				current_segment INTEGER DEFAULT 0,
+				current_repo_index INTEGER DEFAULT 0,
+				total_repos_found INTEGER DEFAULT 0,
 				last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 			)
 		`);
@@ -144,6 +158,8 @@ async function initializeDatabase() {
 			await runQuery(db, `ALTER TABLE request_state ADD COLUMN date_range TEXT`);
 			await runQuery(db, `ALTER TABLE request_state ADD COLUMN date_segments TEXT`);
 			await runQuery(db, `ALTER TABLE request_state ADD COLUMN current_segment INTEGER DEFAULT 0`);
+			await runQuery(db, `ALTER TABLE request_state ADD COLUMN current_repo_index INTEGER DEFAULT 0`);
+			await runQuery(db, `ALTER TABLE request_state ADD COLUMN total_repos_found INTEGER DEFAULT 0`);
 		} catch (err) {
 			// Columns already exist, ignore errors
 			if (!err.message.includes('duplicate column name')) {
@@ -158,29 +174,44 @@ async function initializeDatabase() {
 	}
 }
 
-// Function to save email to database
+// Function to save email to database with proper uniqueness handling
 async function saveEmail(email, repoName) {
 	// Determine if email should be ignored (contains "noreply" or doesn't have @)
 	const shouldIgnore = email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@');
 
 	try {
-		// Use INSERT OR IGNORE to prevent duplicate entries
-		// This is more efficient than checking first and then inserting
-		const stmt = prepareStatement(db, 'INSERT OR IGNORE INTO emails (email, repo_name, ignore) VALUES (?, ?, ?)');
-		const result = await runStatement(stmt, [email, repoName, shouldIgnore ? 1 : 0]);
+		// First, ensure the email exists in the main emails table
+		const emailStmt = prepareStatement(db, 'INSERT OR IGNORE INTO emails (email, repo_name, ignore) VALUES (?, ?, ?)');
+		const emailResult = await runStatement(emailStmt, [email, repoName, shouldIgnore ? 1 : 0]);
+		await finalizeStatement(emailStmt);
 
-		// result.changes tells us if a row was inserted (1) or not (0)
-		if (result.changes === 0) {
-			console.log(`  Email already exists in database: ${email}`);
-		} else {
+		// Always try to add the email-repository relationship
+		const repoStmt = prepareStatement(db, 'INSERT OR IGNORE INTO email_repositories (email, repo_name) VALUES (?, ?)');
+		const repoResult = await runStatement(repoStmt, [email, repoName]);
+		await finalizeStatement(repoStmt);
+
+		if (emailResult.changes > 0) {
+			// New email was inserted
 			if (shouldIgnore) {
 				console.log(`  Saved noreply email with ignore flag: ${email}`);
 			} else {
 				console.log(`  Saved email: ${email}`);
 			}
+		} else if (repoResult.changes > 0) {
+			// Email existed but this is a new repository for this email
+			console.log(`  Email already exists, added new repository ${repoName}: ${email}`);
+		} else {
+			// Both email and email-repository relationship already exist
+			console.log(`  Email already exists in database for repo ${repoName}: ${email}`);
 		}
 
-		await finalizeStatement(stmt);
+		// Update the main emails table with the most recent repository
+		if (repoResult.changes > 0) {
+			const updateStmt = prepareStatement(db, 'UPDATE emails SET repo_name = ? WHERE email = ?');
+			await runStatement(updateStmt, [repoName, email]);
+			await finalizeStatement(updateStmt);
+		}
+
 	} catch (error) {
 		console.error(`  Error saving email ${email}: ${error.message}`);
 	}
@@ -189,7 +220,7 @@ async function saveEmail(email, repoName) {
 // Function to get saved state from database
 async function getSavedState() {
 	try {
-		const state = await getQuery(db, 'SELECT keyword, current_page, date_range, date_segments, current_segment FROM request_state WHERE id = 1');
+		const state = await getQuery(db, 'SELECT keyword, current_page, date_range, date_segments, current_segment, current_repo_index, total_repos_found FROM request_state WHERE id = 1');
 		if (state && state.date_range) {
 			state.date_range = JSON.parse(state.date_range);
 		}
@@ -214,6 +245,21 @@ async function saveState(keyword, page, dateRange = null) {
 		console.log(`Saved state: keyword=${keyword}, page=${page}${dateRange ? `, dateRange=${dateRange.start} to ${dateRange.end}` : ''}`);
 	} catch (err) {
 		console.error(`Error saving state: ${err.message}`);
+		throw err;
+	}
+}
+
+// Function to save detailed processing state
+async function saveProcessingState(keyword, segments, currentSegment, currentRepoIndex, totalReposFound) {
+	try {
+		await runQuery(
+			db,
+			'INSERT OR REPLACE INTO request_state (id, keyword, current_page, date_segments, current_segment, current_repo_index, total_repos_found, last_updated) VALUES (1, ?, 1, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+			[keyword, JSON.stringify(segments), currentSegment, currentRepoIndex, totalReposFound]
+		);
+		console.log(`💾 State saved: segment ${currentSegment + 1}/${segments.length}, repo ${currentRepoIndex}/${totalReposFound}`);
+	} catch (err) {
+		console.error(`Error saving processing state: ${err.message}`);
 		throw err;
 	}
 }
@@ -331,11 +377,13 @@ async function searchRepositoriesWithStats(keyword) {
 
 	// Check for saved state
 	const savedState = await getSavedState();
+	let resumingRepoIndex = 0;
 	if (savedState && savedState.keyword === keyword) {
 		if (savedState.date_segments) {
 			dateSegments = savedState.date_segments;
 			currentSegment = savedState.current_segment || 0;
-			console.log(`Resuming from segment ${currentSegment + 1} of ${dateSegments.length} for keyword "${keyword}"`);
+			resumingRepoIndex = savedState.current_repo_index || 0;
+			console.log(`🔄 Resuming from segment ${currentSegment + 1} of ${dateSegments.length}, repo ${resumingRepoIndex} for keyword "${keyword}"`);
 		} else {
 			console.log('Found old state format, starting fresh with date segmentation');
 			await runQuery(db, 'DELETE FROM request_state WHERE id = 1');
@@ -437,7 +485,11 @@ async function searchRepositoriesWithStats(keyword) {
 			'Authorization': `Bearer ${GITHUB_TOKEN}`
 		};
 
-		for (const repo of allRepos) {
+		// Save initial processing state
+		await saveProcessingState(keyword, dateSegments, currentSegment, resumingRepoIndex, allRepos.length);
+
+		for (let repoIndex = resumingRepoIndex; repoIndex < allRepos.length; repoIndex++) {
+			const repo = allRepos[repoIndex];
 			// Check if this repository has already been processed
 			const alreadyProcessed = await isRepoProcessed(repo.full_name);
 			if (alreadyProcessed) {
@@ -445,9 +497,12 @@ async function searchRepositoriesWithStats(keyword) {
 				continue;
 			}
 
+			// Save state before processing each repository
+			await saveProcessingState(keyword, dateSegments, currentSegment, repoIndex, allRepos.length);
+
 			// Only sleep before making actual GitHub API calls
 			await sleep(1000);
-			console.log(`Fetching commits for ${repo.full_name}...`);
+			console.log(`[${repoIndex + 1}/${allRepos.length}] Fetching commits for ${repo.full_name}...`);
 
 			try {
 				const commitsUrl = `https://api.github.com/repos/${repo.full_name}/commits?per_page=${COMMITS_PER_REPO}`;
@@ -529,13 +584,9 @@ async function searchRepositoriesWithStats(keyword) {
 	} catch (error) {
 		console.error('Error fetching data:', error.message);
 		// Save current state to allow resuming from this point
-		if (currentSegment > 0) {
-			await runQuery(
-				db,
-				'UPDATE request_state SET current_segment = ?, last_updated = CURRENT_TIMESTAMP WHERE id = 1',
-				[currentSegment]
-			);
-			console.log(`❌ Error occurred. State saved at segment ${currentSegment + 1} for resuming later.`);
+		if (currentSegment > 0 || resumingRepoIndex > 0) {
+			await saveProcessingState(keyword, dateSegments, currentSegment, resumingRepoIndex, allRepos.length);
+			console.log(`❌ Error occurred. State saved at segment ${currentSegment + 1}, repo ${resumingRepoIndex} for resuming later.`);
 		}
 	}
 }
