@@ -1,13 +1,15 @@
+require('dotenv').config();
+
 const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 
-const GITHUB_TOKEN = process.env.GH_TOKEN; // Replace with your token
-const KEYWORD = 'OPENROUTER'; // Replace with your keyword
-const MAX_RESULTS = 100;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const KEYWORD = process.env.KEYWORD || 'OPENROUTER';
+const MAX_RESULTS = parseInt(process.env.MAX_RESULTS) || 100;
 const PER_PAGE = 100; // GitHub API max per page
-const COMMITS_PER_REPO = 30; // Number of recent commits to fetch per repository
-const DB_PATH = path.join(__dirname, 'contributor_emails.db'); // Path to SQLite database
+const COMMITS_PER_REPO = parseInt(process.env.COMMITS_PER_REPO) || 30;
+const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, 'contributor_emails.db');
 
 // Utility functions to promisify sqlite3 operations
 function openDatabase(dbPath) {
