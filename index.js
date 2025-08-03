@@ -105,6 +105,8 @@ async function initializeDatabase() {
 				ignore BOOLEAN,
 				approved BOOLEAN DEFAULT 0,
 				sent BOOLEAN DEFAULT 0,
+				email_sent BOOLEAN DEFAULT 0,
+				email_follow_ups INTEGER DEFAULT 0,
 				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 			)
 		`);
@@ -113,6 +115,28 @@ async function initializeDatabase() {
 		try {
 			await runQuery(db, `ALTER TABLE emails ADD COLUMN repo_name TEXT`);
 			console.log('Added repo_name column to existing emails table');
+		} catch (err) {
+			// Column already exists, ignore the error
+			if (!err.message.includes('duplicate column name')) {
+				throw err;
+			}
+		}
+
+		// Add email_sent column if it doesn't exist (for existing databases)
+		try {
+			await runQuery(db, `ALTER TABLE emails ADD COLUMN email_sent BOOLEAN DEFAULT 0`);
+			console.log('Added email_sent column to existing emails table');
+		} catch (err) {
+			// Column already exists, ignore the error
+			if (!err.message.includes('duplicate column name')) {
+				throw err;
+			}
+		}
+
+		// Add email_follow_ups column if it doesn't exist (for existing databases)
+		try {
+			await runQuery(db, `ALTER TABLE emails ADD COLUMN email_follow_ups INTEGER DEFAULT 0`);
+			console.log('Added email_follow_ups column to existing emails table');
 		} catch (err) {
 			// Column already exists, ignore the error
 			if (!err.message.includes('duplicate column name')) {
@@ -335,13 +359,13 @@ async function searchRepositoriesWithStats(keyword) {
 async function main() {
 	try {
 		console.log('Starting contributor analysis...');
-		
+
 		// Initialize database first
 		await initializeDatabase();
-		
+
 		// Then run the search
 		await searchRepositoriesWithStats(KEYWORD);
-		
+
 		// Close the database connection when done
 		console.log('Closing database connection...');
 		await closeDatabase(db);
