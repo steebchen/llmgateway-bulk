@@ -11,6 +11,10 @@ const PER_PAGE = 100; // GitHub API max per page
 const COMMITS_PER_REPO = parseInt(process.env.COMMITS_PER_REPO) || 30;
 const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, 'contributor_emails.db');
 
+function sleep(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // Utility functions to promisify sqlite3 operations
 function openDatabase(dbPath) {
 	return new Promise((resolve, reject) => {
@@ -244,6 +248,7 @@ async function searchRepositoriesWithStats(keyword) {
 		const contributorStats = new Map(); // email -> { count, repos, lastCommitDate }
 
 		for (const repo of allRepos) {
+			await sleep(1000);
 			console.log(`Fetching commits for ${repo.full_name}...`);
 
 			try {
