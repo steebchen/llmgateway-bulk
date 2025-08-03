@@ -3,7 +3,8 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(pnpm add:*)",
-      "Bash(touch:*)"
+      "Bash(touch:*)",
+      "Bash(sqlite3:*)"
     ],
     "deny": []
   }
