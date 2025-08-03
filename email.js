@@ -170,7 +170,7 @@ Provide a concise summary focusing on the project's core functionality and use c
 				'Authorization': `Bearer ${LLMGATEWAY_API_KEY}`
 			},
 			body: JSON.stringify({
-				model: 'gpt-4o-mini',
+				model: 'google-ai-studio/gemini-2.5-pro',
 				messages: [
 					{
 						role: 'user',
@@ -300,13 +300,13 @@ async function main() {
 			const emailRecord = emailsToSend[i];
 			const email = emailRecord.email;
 			const repoName = emailRecord.repo_name;
-			
+
 			console.log(`\n[${i + 1}/${emailsToSend.length}] Processing: ${email} (${repoName})`);
 
 			// Fetch and analyze repository
 			console.log(`📖 Fetching repository info for ${repoName}...`);
 			const repoInfo = await fetchRepoInfo(repoName);
-			
+
 			if (!repoInfo) {
 				console.log(`⚠️ Could not fetch repo info for ${repoName}, skipping...`);
 				failureCount++;
