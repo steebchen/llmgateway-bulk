@@ -6,7 +6,7 @@ const sqlite3 = require('sqlite3').verbose();
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const KEYWORD = process.env.KEYWORD || 'OPENROUTER';
-const MAX_RESULTS = parseInt(process.env.MAX_RESULTS) || 1000000;
+const MAX_RESULTS = parseInt(process.env.MAX_RESULTS) || 100;
 const PER_PAGE = 100; // GitHub API max per page
 const COMMITS_PER_REPO = parseInt(process.env.COMMITS_PER_REPO) || 30;
 const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, 'contributor_emails.db');
@@ -224,23 +224,48 @@ async function searchRepositoriesWithStats(keyword) {
 	if (savedState && savedState.keyword === keyword) {
 		page = savedState.current_page;
 		console.log(`Resuming from page ${page} for keyword "${keyword}"`);
+		
+		// If saved page is beyond GitHub's limit, we're done
+		if (page > 10) {
+			console.log(`Saved page ${page} exceeds GitHub's limit of 10 pages. All available data has been processed.`);
+			await runQuery(db, 'DELETE FROM request_state WHERE id = 1');
+			console.log('State cleared - processing was already complete.');
+			return [];
+		}
 	}
 
 
 	try {
-		// First, get total count to log how many pages we expect
-		const initialUrl = `${baseUrl}&per_page=${PER_PAGE}&page=1`;
-		const initialResponse = await fetch(initialUrl, { headers });
-		if (!initialResponse.ok) {
-			throw new Error(`GitHub API error: ${initialResponse.status} ${initialResponse.statusText}`);
-		}
-		const initialData = await initialResponse.json();
-		const totalCount = Math.min(initialData.total_count, MAX_RESULTS);
-		const actualTotalPages = Math.ceil(Math.min(initialData.total_count, 1000) / PER_PAGE); // GitHub's 1000 limit
-		const targetPages = Math.ceil(totalCount / PER_PAGE);
-		console.log(`Total repositories found: ${initialData.total_count}, processing up to ${totalCount} (${targetPages} pages of ${actualTotalPages} available)`);
+		// Get total count from first page to log how many pages we expect (only if starting fresh)
+		let actualTotalPages;
+		if (page === 1) {
+			const initialUrl = `${baseUrl}&per_page=${PER_PAGE}&page=1`;
+			const initialResponse = await fetch(initialUrl, { headers });
+			if (!initialResponse.ok) {
+				throw new Error(`GitHub API error: ${initialResponse.status} ${initialResponse.statusText}`);
+			}
+			const initialData = await initialResponse.json();
+			const totalCount = Math.min(initialData.total_count, MAX_RESULTS);
+			actualTotalPages = Math.ceil(Math.min(initialData.total_count, 1000) / PER_PAGE); // GitHub's 1000 limit
+			const targetPages = Math.ceil(totalCount / PER_PAGE);
+			console.log(`Total repositories found: ${initialData.total_count}, processing up to ${totalCount} (${targetPages} pages of ${actualTotalPages} available)`);
 
-		while (hasMoreResults && allRepos.length < MAX_RESULTS) {
+			// Use the data from this call for the first iteration
+			const remainingSlots = MAX_RESULTS - allRepos.length;
+			const reposToAdd = initialData.items.slice(0, remainingSlots);
+			allRepos.push(...reposToAdd);
+			hasMoreResults = initialData.items.length === PER_PAGE && allRepos.length < MAX_RESULTS;
+			page++;
+			await saveState(keyword, page);
+			if (hasMoreResults) {
+				await new Promise(resolve => setTimeout(resolve, 100));
+			}
+		} else {
+			actualTotalPages = 10; // Assume GitHub's max 1000/100 = 10 pages when resuming
+			console.log(`Resuming from page ${page}, assuming max ${actualTotalPages} pages available`);
+		}
+
+		while (hasMoreResults && allRepos.length < MAX_RESULTS && page <= 10) {
 			const url = `${baseUrl}&per_page=${PER_PAGE}&page=${page}`;
 			console.log(`Fetching repositories page ${page} of ${actualTotalPages}...`);
 
@@ -353,9 +378,9 @@ async function searchRepositoriesWithStats(keyword) {
 			console.log('');
 		});
 
-		// Reset state to page 1 after successful completion
-		await saveState(keyword, 1);
-		console.log('Processing complete. State reset to page 1 for next run.');
+		// Delete state after successful completion (all available pages processed)
+		await runQuery(db, 'DELETE FROM request_state WHERE id = 1');
+		console.log('Processing complete. State cleared - all available pages processed.');
 
 		return sortedContributors.map(([email]) => email);
 
