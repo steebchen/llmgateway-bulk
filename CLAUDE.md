@@ -8,7 +8,7 @@ This is a Node.js application that searches GitHub repositories for contributors
 
 ## Architecture
 
-The codebase consists of a single main file (`send.js`) that:
+The codebase consists of a single main file (`index.js`) that:
 
 1. **GitHub API Integration**: Searches repositories using the GitHub API with a configurable keyword
 2. **SQLite Database**: Stores contributor emails with metadata (ignore flags, approval status, sent status)
@@ -23,13 +23,13 @@ The codebase consists of a single main file (`send.js`) that:
 
 ## Development Commands
 
-- **Run the application**: `node send.js`
+- **Run the application**: `node index.js`
 - **Install dependencies**: `pnpm install` (uses pnpm as package manager)
 - **No test suite**: Currently no tests are configured
 
 ## Configuration
 
-The application uses hardcoded configuration constants at the top of `send.js`:
+The application uses hardcoded configuration constants at the top of `index.js`:
 
 - `GITHUB_TOKEN`: GitHub Personal Access Token for API access
 - `KEYWORD`: Search term for finding repositories

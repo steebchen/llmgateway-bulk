@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 
-const GITHUB_TOKEN = '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'; // Replace with your token
+const GITHUB_TOKEN = process.env.GH_TOKEN; // Replace with your token
 const KEYWORD = 'OPENROUTER'; // Replace with your keyword
 const MAX_RESULTS = 100;
 const PER_PAGE = 100; // GitHub API max per page
