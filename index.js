@@ -115,17 +115,6 @@ async function initializeDatabase() {
 			)
 		`);
 
-		// Create email_repositories junction table for many-to-many relationship
-		await runQuery(db, `
-			CREATE TABLE IF NOT EXISTS email_repositories (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				email TEXT,
-				repo_name TEXT,
-				first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-				FOREIGN KEY (email) REFERENCES emails (email),
-				UNIQUE(email, repo_name)
-			)
-		`);
 
 		// Add repo_name column if it doesn't exist (for existing databases)
 		try {
@@ -153,20 +142,6 @@ async function initializeDatabase() {
 			)
 		`);
 
-		// Add new columns if they don't exist (for existing databases)
-		try {
-			await runQuery(db, `ALTER TABLE request_state ADD COLUMN date_range TEXT`);
-			await runQuery(db, `ALTER TABLE request_state ADD COLUMN date_segments TEXT`);
-			await runQuery(db, `ALTER TABLE request_state ADD COLUMN current_segment INTEGER DEFAULT 0`);
-			await runQuery(db, `ALTER TABLE request_state ADD COLUMN current_repo_index INTEGER DEFAULT 0`);
-			await runQuery(db, `ALTER TABLE request_state ADD COLUMN total_repos_found INTEGER DEFAULT 0`);
-		} catch (err) {
-			// Columns already exist, ignore errors
-			if (!err.message.includes('duplicate column name')) {
-				throw err;
-			}
-		}
-
 		console.log('Database initialized successfully');
 	} catch (err) {
 		console.error(`Error initializing database: ${err.message}`);
@@ -174,44 +149,28 @@ async function initializeDatabase() {
 	}
 }
 
-// Function to save email to database with proper uniqueness handling
+// Function to save email to database (only first occurrence)
 async function saveEmail(email, repoName) {
 	// Determine if email should be ignored (contains "noreply" or doesn't have @)
 	const shouldIgnore = email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@');
 
 	try {
-		// First, ensure the email exists in the main emails table
-		const emailStmt = prepareStatement(db, 'INSERT OR IGNORE INTO emails (email, repo_name, ignore) VALUES (?, ?, ?)');
-		const emailResult = await runStatement(emailStmt, [email, repoName, shouldIgnore ? 1 : 0]);
-		await finalizeStatement(emailStmt);
+		// Use INSERT OR IGNORE to prevent duplicate entries - only saves first occurrence
+		const stmt = prepareStatement(db, 'INSERT OR IGNORE INTO emails (email, repo_name, ignore) VALUES (?, ?, ?)');
+		const result = await runStatement(stmt, [email, repoName, shouldIgnore ? 1 : 0]);
+		await finalizeStatement(stmt);
 
-		// Always try to add the email-repository relationship
-		const repoStmt = prepareStatement(db, 'INSERT OR IGNORE INTO email_repositories (email, repo_name) VALUES (?, ?)');
-		const repoResult = await runStatement(repoStmt, [email, repoName]);
-		await finalizeStatement(repoStmt);
-
-		if (emailResult.changes > 0) {
+		// result.changes tells us if a row was inserted (1) or not (0)
+		if (result.changes === 0) {
+			console.log(`  Email already exists in database: ${email}`);
+		} else {
 			// New email was inserted
 			if (shouldIgnore) {
 				console.log(`  Saved noreply email with ignore flag: ${email}`);
 			} else {
 				console.log(`  Saved email: ${email}`);
 			}
-		} else if (repoResult.changes > 0) {
-			// Email existed but this is a new repository for this email
-			console.log(`  Email already exists, added new repository ${repoName}: ${email}`);
-		} else {
-			// Both email and email-repository relationship already exist
-			console.log(`  Email already exists in database for repo ${repoName}: ${email}`);
 		}
-
-		// Update the main emails table with the most recent repository
-		if (repoResult.changes > 0) {
-			const updateStmt = prepareStatement(db, 'UPDATE emails SET repo_name = ? WHERE email = ?');
-			await runStatement(updateStmt, [repoName, email]);
-			await finalizeStatement(updateStmt);
-		}
-
 	} catch (error) {
 		console.error(`  Error saving email ${email}: ${error.message}`);
 	}
@@ -280,23 +239,23 @@ function generateDateSegments(startDate, endDate, segmentDays = 30) {
 	const segments = [];
 	const current = new Date(startDate);
 	const end = new Date(endDate);
-	
+
 	while (current <= end) {
 		const segmentEnd = new Date(current);
 		segmentEnd.setDate(segmentEnd.getDate() + segmentDays - 1);
-		
+
 		if (segmentEnd > end) {
 			segmentEnd.setTime(end.getTime());
 		}
-		
+
 		segments.push({
 			start: current.toISOString().split('T')[0],
 			end: segmentEnd.toISOString().split('T')[0]
 		});
-		
+
 		current.setDate(current.getDate() + segmentDays);
 	}
-	
+
 	return segments;
 }
 
@@ -324,45 +283,45 @@ async function searchRepositoriesInDateRange(keyword, dateRange) {
 		}
 		const initialData = await initialResponse.json();
 		totalCount = initialData.total_count;
-		
+
 		console.log(`  Date range ${dateRange.start} to ${dateRange.end}: ${totalCount} repositories`);
-		
+
 		// If more than 1000 results, we need to split this range further
 		if (totalCount > 1000) {
 			console.log(`  ⚠️  Range has ${totalCount} results (>1000), needs further segmentation`);
 			return { repos: [], needsSplit: true, totalCount };
 		}
-		
+
 		// Process all pages for this date range
 		allRepos.push(...initialData.items);
 		hasMoreResults = initialData.items.length === PER_PAGE;
 		page++;
-		
+
 		if (hasMoreResults) {
 			await sleep(500);
 		}
-		
+
 		while (hasMoreResults && page <= 10) {
 			const url = `${baseUrl}&per_page=${PER_PAGE}&page=${page}`;
-			
+
 			const response = await fetch(url, { headers });
 			if (!response.ok) {
 				throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
 			}
-			
+
 			const data = await response.json();
 			allRepos.push(...data.items);
-			
+
 			hasMoreResults = data.items.length === PER_PAGE;
 			page++;
-			
+
 			if (hasMoreResults) {
 				await sleep(500);
 			}
 		}
-		
+
 		return { repos: allRepos, needsSplit: false, totalCount };
-		
+
 	} catch (error) {
 		console.error(`Error searching date range ${dateRange.start} to ${dateRange.end}:`, error.message);
 		return { repos: [], needsSplit: false, totalCount: 0 };
@@ -394,15 +353,15 @@ async function searchRepositoriesWithStats(keyword) {
 		// Generate date segments if not resuming
 		if (dateSegments.length === 0) {
 			console.log('🗓️  Generating date segments to bypass GitHub\'s 1000 result limit...');
-			
+
 			// Start from 2008 (GitHub's founding) to today
 			const startDate = new Date('2008-01-01');
 			const endDate = new Date();
-			
+
 			// Start with 6-month segments
 			dateSegments = generateDateSegments(startDate, endDate, 180);
 			console.log(`Generated ${dateSegments.length} date segments (6-month periods)`);
-			
+
 			// Save initial state
 			await runQuery(
 				db,
@@ -415,23 +374,23 @@ async function searchRepositoriesWithStats(keyword) {
 		for (let i = currentSegment; i < dateSegments.length; i++) {
 			const segment = dateSegments[i];
 			console.log(`\n📅 Processing segment ${i + 1}/${dateSegments.length}: ${segment.start} to ${segment.end}`);
-			
+
 			const result = await searchRepositoriesInDateRange(keyword, segment);
-			
+
 			if (result.needsSplit) {
 				// Split this segment into smaller chunks (1 month)
 				console.log(`  🔄 Splitting segment into smaller chunks...`);
 				const subSegments = generateDateSegments(new Date(segment.start), new Date(segment.end), 30);
-				
+
 				for (const subSegment of subSegments) {
 					console.log(`  📅 Processing sub-segment: ${subSegment.start} to ${subSegment.end}`);
 					const subResult = await searchRepositoriesInDateRange(keyword, subSegment);
-					
+
 					if (subResult.needsSplit) {
 						// Split further into weekly chunks
 						console.log(`    🔄 Sub-segment still too large, splitting into weeks...`);
 						const weeklySegments = generateDateSegments(new Date(subSegment.start), new Date(subSegment.end), 7);
-						
+
 						for (const weekSegment of weeklySegments) {
 							console.log(`    📅 Processing weekly segment: ${weekSegment.start} to ${weekSegment.end}`);
 							const weekResult = await searchRepositoriesInDateRange(keyword, weekSegment);
@@ -446,16 +405,16 @@ async function searchRepositoriesWithStats(keyword) {
 			} else {
 				allRepos.push(...result.repos);
 			}
-			
+
 			// Update progress
 			await runQuery(
 				db,
 				'UPDATE request_state SET current_segment = ?, last_updated = CURRENT_TIMESTAMP WHERE id = 1',
 				[i + 1]
 			);
-			
+
 			await sleep(1000); // Increased rate limiting between segments
-			
+
 			// Check if we've reached MAX_RESULTS
 			if (allRepos.length >= MAX_RESULTS) {
 				allRepos = allRepos.slice(0, MAX_RESULTS);
