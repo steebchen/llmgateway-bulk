@@ -6,21 +6,15 @@ const sqlite3 = require('sqlite3').verbose();
 const nodemailer = require('nodemailer');
 
 const MAILTRAP_API_KEY = process.env.MAILTRAP_API_KEY;
+const LLMGATEWAY_API_KEY = process.env.LLMGATEWAY_API_KEY;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const EMAIL_COUNT = parseInt(process.env.EMAIL_COUNT) || 10;
 const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, 'contributor_emails.db');
 
 // Email configuration
-const FROM_EMAIL = process.env.FROM_EMAIL || 'sender@example.com';
-const FROM_NAME = process.env.FROM_NAME || 'Bulk Outreach';
-const EMAIL_SUBJECT = process.env.EMAIL_SUBJECT || 'Developer Outreach';
-const EMAIL_BODY = process.env.EMAIL_BODY || `Hello,
-
-I hope this email finds you well. I came across your work on GitHub and was impressed by your contributions to the developer community.
-
-I'd love to connect and discuss potential collaboration opportunities.
-
-Best regards,
-${FROM_NAME}`;
+const FROM_EMAIL = process.env.FROM_EMAIL || 'hello@llmgateway.io';
+const FROM_NAME = process.env.FROM_NAME || 'LLMGateway Team';
+const EMAIL_SUBJECT = process.env.EMAIL_SUBJECT || 'Self-hosted AI Gateway alternative to OpenRouter';
 
 // Utility functions to promisify sqlite3 operations
 function openDatabase(dbPath) {
@@ -84,31 +78,147 @@ function createMailTransporter() {
 	});
 }
 
-// Fetch unique email addresses from database
+// Fetch unique email addresses with repo info from database
 async function fetchEmailsToSend(db, count) {
 	try {
 		const query = `
-			SELECT DISTINCT email
+			SELECT DISTINCT email, repo_name
 			FROM emails
 			WHERE ignore = 0
 			AND approved = 0
 			AND email_sent = 0
 			AND email NOT LIKE '%noreply%'
 			AND email LIKE '%@%'
+			AND repo_name IS NOT NULL
 			ORDER BY created_at DESC
 			LIMIT ?
 		`;
 
 		const emails = await allQuery(db, query, [count]);
-		return emails.map(row => row.email);
+		return emails;
 	} catch (error) {
 		console.error('Error fetching emails from database:', error.message);
 		throw error;
 	}
 }
 
-// Send email using nodemailer
-async function sendEmail(transporter, toEmail) {
+// Fetch repository information from GitHub API
+async function fetchRepoInfo(repoName) {
+	try {
+		const headers = {
+			'Accept': 'application/vnd.github+json',
+			'Authorization': `Bearer ${GITHUB_TOKEN}`,
+			'User-Agent': 'LLMGateway-Outreach'
+		};
+
+		// Get repository info
+		const repoResponse = await fetch(`https://api.github.com/repos/${repoName}`, { headers });
+		if (!repoResponse.ok) {
+			throw new Error(`GitHub API error: ${repoResponse.status}`);
+		}
+		const repoData = await repoResponse.json();
+
+		// Get README content
+		let readmeContent = '';
+		try {
+			const readmeResponse = await fetch(`https://api.github.com/repos/${repoName}/readme`, { headers });
+			if (readmeResponse.ok) {
+				const readmeData = await readmeResponse.json();
+				readmeContent = Buffer.from(readmeData.content, 'base64').toString('utf-8');
+				// Limit README to first 2000 characters
+				if (readmeContent.length > 2000) {
+					readmeContent = readmeContent.substring(0, 2000) + '...';
+				}
+			}
+		} catch (readmeError) {
+			console.log(`  No README found for ${repoName}`);
+		}
+
+		return {
+			name: repoData.name,
+			fullName: repoData.full_name,
+			description: repoData.description || '',
+			language: repoData.language || 'Unknown',
+			stars: repoData.stargazers_count || 0,
+			readme: readmeContent
+		};
+	} catch (error) {
+		console.error(`Error fetching repo info for ${repoName}:`, error.message);
+		return null;
+	}
+}
+
+// Analyze repository using LLMGateway
+async function analyzeRepository(repoInfo) {
+	try {
+		const prompt = `Analyze this GitHub repository and provide a brief 2-3 sentence summary of what the project does and its main purpose:
+
+Repository: ${repoInfo.fullName}
+Description: ${repoInfo.description}
+Language: ${repoInfo.language}
+Stars: ${repoInfo.stars}
+
+README content:
+${repoInfo.readme}
+
+Provide a concise summary focusing on the project's core functionality and use case.`;
+
+		const response = await fetch('https://api.llmgateway.io/v1/chat/completions', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Bearer ${LLMGATEWAY_API_KEY}`
+			},
+			body: JSON.stringify({
+				model: 'gpt-4o-mini',
+				messages: [
+					{
+						role: 'user',
+						content: prompt
+					}
+				],
+				max_tokens: 200,
+				temperature: 0.7
+			})
+		});
+
+		if (!response.ok) {
+			throw new Error(`LLMGateway API error: ${response.status}`);
+		}
+
+		const data = await response.json();
+		return data.choices[0].message.content.trim();
+	} catch (error) {
+		console.error('Error analyzing repository:', error.message);
+		return `${repoInfo.name} - ${repoInfo.description || 'A GitHub repository'}`;
+	}
+}
+
+// Generate personalized email content
+function generatePersonalizedEmail(repoAnalysis, repoInfo) {
+	return `Hi there!
+
+I came across your work on ${repoInfo.fullName} and was impressed by what you've built. ${repoAnalysis}
+
+I wanted to reach out because I noticed you might be using OpenRouter or similar AI gateway services for your projects. We've built LLMGateway (https://llmgateway.io) - a self-hosted alternative that gives you:
+
+• Complete control over your AI infrastructure
+• Deep analytics and usage insights
+• Cost optimization through intelligent routing
+• No vendor lock-in - deploy anywhere
+• Enterprise-grade security and compliance
+
+Unlike hosted services, LLMGateway can be deployed in your own environment, giving you full visibility into costs, usage patterns, and model performance. This is particularly valuable for production applications where you need predictable costs and complete data control.
+
+Would you be interested in learning more about how LLMGateway could benefit your ${repoInfo.language} projects? I'd be happy to show you a quick demo or answer any questions.
+
+Best regards,
+${FROM_NAME}
+https://llmgateway.io`;
+}
+
+// Send personalized email using nodemailer
+async function sendEmail(transporter, toEmail, emailContent) {
 	try {
 		const mailOptions = {
 			from: {
@@ -117,7 +227,7 @@ async function sendEmail(transporter, toEmail) {
 			},
 			to: toEmail,
 			subject: EMAIL_SUBJECT,
-			text: EMAIL_BODY
+			text: emailContent
 		};
 
 		const result = await transporter.sendMail(mailOptions);
@@ -151,6 +261,12 @@ async function main() {
 		if (!MAILTRAP_API_KEY) {
 			throw new Error('MAILTRAP_API_KEY environment variable is required');
 		}
+		if (!LLMGATEWAY_API_KEY) {
+			throw new Error('LLMGATEWAY_API_KEY environment variable is required');
+		}
+		if (!GITHUB_TOKEN) {
+			throw new Error('GITHUB_TOKEN environment variable is required');
+		}
 
 		// Initialize database connection
 		db = await openDatabase(DB_PATH);
@@ -181,10 +297,32 @@ async function main() {
 		let failureCount = 0;
 
 		for (let i = 0; i < emailsToSend.length; i++) {
-			const email = emailsToSend[i];
-			console.log(`\n[${i + 1}/${emailsToSend.length}] Sending to: ${email}`);
+			const emailRecord = emailsToSend[i];
+			const email = emailRecord.email;
+			const repoName = emailRecord.repo_name;
+			
+			console.log(`\n[${i + 1}/${emailsToSend.length}] Processing: ${email} (${repoName})`);
 
-			const success = await sendEmail(transporter, email);
+			// Fetch and analyze repository
+			console.log(`📖 Fetching repository info for ${repoName}...`);
+			const repoInfo = await fetchRepoInfo(repoName);
+			
+			if (!repoInfo) {
+				console.log(`⚠️ Could not fetch repo info for ${repoName}, skipping...`);
+				failureCount++;
+				continue;
+			}
+
+			console.log(`🧠 Analyzing repository with LLMGateway...`);
+			const repoAnalysis = await analyzeRepository(repoInfo);
+			console.log(`📝 Analysis: ${repoAnalysis.substring(0, 100)}...`);
+
+			// Generate personalized email
+			const personalizedEmail = generatePersonalizedEmail(repoAnalysis, repoInfo);
+
+			// Send email
+			console.log(`📧 Sending personalized email to ${email}...`);
+			const success = await sendEmail(transporter, email, personalizedEmail);
 
 			if (success) {
 				await markEmailAsSent(db, email);
@@ -193,10 +331,10 @@ async function main() {
 				failureCount++;
 			}
 
-			// Rate limiting - wait 1 second between emails
+			// Rate limiting - wait 2 seconds between emails (increased due to API calls)
 			if (i < emailsToSend.length - 1) {
-				console.log('⏳ Waiting 1 second...');
-				await new Promise(resolve => setTimeout(resolve, 1000));
+				console.log('⏳ Waiting 2 seconds...');
+				await new Promise(resolve => setTimeout(resolve, 2000));
 			}
 		}
 
