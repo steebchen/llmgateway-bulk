@@ -239,11 +239,12 @@ async function sendEmail(transporter, toEmail, emailContent) {
 	}
 }
 
-// Mark email as sent in database
-async function markEmailAsSent(db, email) {
+// Mark email as sent and save email body in database
+async function markEmailAsSent(db, email, emailBody) {
 	try {
-		await runQuery(db, 'UPDATE emails SET email_sent = 1 WHERE email = ?', [email]);
-		console.log(`📝 Marked ${email} as sent in database`);
+		// Update email as sent and save the email body
+		await runQuery(db, 'UPDATE emails SET email_sent = 1, email_body = ? WHERE email = ?', [emailBody, email]);
+		console.log(`📝 Marked ${email} as sent and saved email body to database`);
 	} catch (error) {
 		console.error(`Error marking email as sent for ${email}:`, error.message);
 	}
@@ -325,7 +326,7 @@ async function main() {
 			const success = await sendEmail(transporter, email, personalizedEmail);
 
 			if (success) {
-				await markEmailAsSent(db, email);
+				await markEmailAsSent(db, email, personalizedEmail);
 				successCount++;
 			} else {
 				failureCount++;
