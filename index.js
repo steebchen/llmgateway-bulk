@@ -122,28 +122,6 @@ async function initializeDatabase() {
 			}
 		}
 
-		// Add email_sent column if it doesn't exist (for existing databases)
-		try {
-			await runQuery(db, `ALTER TABLE emails ADD COLUMN email_sent BOOLEAN DEFAULT 0`);
-			console.log('Added email_sent column to existing emails table');
-		} catch (err) {
-			// Column already exists, ignore the error
-			if (!err.message.includes('duplicate column name')) {
-				throw err;
-			}
-		}
-
-		// Add email_follow_ups column if it doesn't exist (for existing databases)
-		try {
-			await runQuery(db, `ALTER TABLE emails ADD COLUMN email_follow_ups INTEGER DEFAULT 0`);
-			console.log('Added email_follow_ups column to existing emails table');
-		} catch (err) {
-			// Column already exists, ignore the error
-			if (!err.message.includes('duplicate column name')) {
-				throw err;
-			}
-		}
-
 		// Create state table to store the last request information
 		await runQuery(db, `
 			CREATE TABLE IF NOT EXISTS request_state (
