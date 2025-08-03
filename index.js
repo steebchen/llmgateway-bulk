@@ -127,6 +127,17 @@ async function initializeDatabase() {
 			}
 		}
 
+		// Add email_body column if it doesn't exist (for email tracking)
+		try {
+			await runQuery(db, `ALTER TABLE emails ADD COLUMN email_body TEXT`);
+			console.log('Added email_body column to existing emails table');
+		} catch (err) {
+			// Column already exists, ignore the error
+			if (!err.message.includes('duplicate column name')) {
+				throw err;
+			}
+		}
+
 		// Create state table to store the last request information
 		await runQuery(db, `
 			CREATE TABLE IF NOT EXISTS request_state (
