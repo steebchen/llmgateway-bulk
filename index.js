@@ -6,7 +6,7 @@ const sqlite3 = require('sqlite3').verbose();
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const KEYWORD = process.env.KEYWORD || 'OPENROUTER';
-const MAX_RESULTS = parseInt(process.env.MAX_RESULTS) || 100;
+const MAX_RESULTS = parseInt(process.env.MAX_RESULTS) || 1000000;
 const PER_PAGE = 100; // GitHub API max per page
 const COMMITS_PER_REPO = parseInt(process.env.COMMITS_PER_REPO) || 30;
 const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, 'contributor_emails.db');
@@ -228,9 +228,20 @@ async function searchRepositoriesWithStats(keyword) {
 
 
 	try {
+		// First, get total count to log how many pages we expect
+		const initialUrl = `${baseUrl}&per_page=${PER_PAGE}&page=1`;
+		const initialResponse = await fetch(initialUrl, { headers });
+		if (!initialResponse.ok) {
+			throw new Error(`GitHub API error: ${initialResponse.status} ${initialResponse.statusText}`);
+		}
+		const initialData = await initialResponse.json();
+		const totalCount = Math.min(initialData.total_count, MAX_RESULTS);
+		const totalPages = Math.ceil(totalCount / PER_PAGE);
+		console.log(`Total repositories found: ${initialData.total_count}, processing up to ${totalCount} (${totalPages} pages)`);
+
 		while (hasMoreResults && allRepos.length < MAX_RESULTS) {
 			const url = `${baseUrl}&per_page=${PER_PAGE}&page=${page}`;
-			console.log(`Fetching repositories page ${page}...`);
+			console.log(`Fetching repositories page ${page} of ${totalPages}...`);
 
 			const response = await fetch(url, { headers });
 			if (!response.ok) {

@@ -7,7 +7,8 @@
       "Bash(sqlite3:*)",
       "Bash(node:*)",
       "Bash(mv:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "mcp__perplexity-mcp__perplexity_ask"
     ],
     "deny": []
   }
