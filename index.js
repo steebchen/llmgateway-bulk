@@ -354,13 +354,13 @@ async function searchRepositoriesWithStats(keyword) {
 		if (dateSegments.length === 0) {
 			console.log('🗓️  Generating date segments to bypass GitHub\'s 1000 result limit...');
 
-			// Start from 2008 (GitHub's founding) to today
-			const startDate = new Date('2008-01-01');
+			// Start from a later date
+			const startDate = new Date('2024-01-01');
 			const endDate = new Date();
 
-			// Start with 6-month segments
-			dateSegments = generateDateSegments(startDate, endDate, 180);
-			console.log(`Generated ${dateSegments.length} date segments (6-month periods)`);
+			// Start with 1-month segments for more recent data
+			dateSegments = generateDateSegments(startDate, endDate, 30);
+			console.log(`Generated ${dateSegments.length} date segments (1-month periods from Nov 2022)`);
 
 			// Save initial state
 			await runQuery(
