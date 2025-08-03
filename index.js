@@ -233,10 +233,10 @@ async function searchRepositoriesWithStats(keyword) {
 
 			hasMoreResults = data.items.length === PER_PAGE && allRepos.length < MAX_RESULTS;
 
-			// Save current state before moving to next page
-			await saveState(keyword, page);
-
 			page++;
+
+			// Save current state after moving to next page
+			await saveState(keyword, page);
 
 			if (hasMoreResults) {
 				await new Promise(resolve => setTimeout(resolve, 100));
