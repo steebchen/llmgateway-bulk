@@ -4,7 +4,10 @@
       "Bash(ls:*)",
       "Bash(pnpm add:*)",
       "Bash(touch:*)",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(node:*)",
+      "Bash(mv:*)",
+      "Bash(timeout:*)"
     ],
     "deny": []
   }
