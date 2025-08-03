@@ -68,12 +68,11 @@ function closeDatabase(db) {
 // Initialize nodemailer with Mailtrap SMTP
 function createMailTransporter() {
 	return nodemailer.createTransport({
-		host: 'send.api.mailtrap.io',
-		port: 587,
-		secure: false,
+		host: "sandbox.smtp.mailtrap.io",
+		port: 2525,
 		auth: {
-			user: 'api',
-			pass: MAILTRAP_API_KEY
+			user: process.env.SMTP_USERNAME,
+			pass: process.env.SMTP_PASSWORD,
 		}
 	});
 }
