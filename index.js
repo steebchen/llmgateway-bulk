@@ -196,6 +196,17 @@ async function saveState(keyword, page) {
 	}
 }
 
+// Function to check if a repository has already been processed
+async function isRepoProcessed(repoName) {
+	try {
+		const result = await getQuery(db, 'SELECT COUNT(*) as count FROM emails WHERE repo_name = ?', [repoName]);
+		return result.count > 0;
+	} catch (err) {
+		console.error(`Error checking if repo is processed: ${err.message}`);
+		return false;
+	}
+}
+
 // Enhanced version that also provides commit statistics
 async function searchRepositoriesWithStats(keyword) {
 	const baseUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(keyword)}`;
@@ -249,6 +260,14 @@ async function searchRepositoriesWithStats(keyword) {
 
 		for (const repo of allRepos) {
 			await sleep(1000);
+
+			// Check if this repository has already been processed
+			const alreadyProcessed = await isRepoProcessed(repo.full_name);
+			if (alreadyProcessed) {
+				console.log(`Skipping ${repo.full_name} (already processed)`);
+				continue;
+			}
+
 			console.log(`Fetching commits for ${repo.full_name}...`);
 
 			try {
