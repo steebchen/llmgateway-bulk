@@ -125,9 +125,6 @@ async function initializeDatabase() {
 	}
 }
 
-// Initialize the database
-initializeDatabase();
-
 // Function to save email to database
 async function saveEmail(email) {
 	// Determine if email should be ignored (contains "noreply" or doesn't have @)
@@ -322,26 +319,34 @@ async function searchRepositoriesWithStats(keyword) {
 	}
 }
 
-// Run the enhanced version
-console.log('Starting contributor analysis...');
-searchRepositoriesWithStats(KEYWORD)
-	.then(async () => {
+// Main function to run the application
+async function main() {
+	try {
+		console.log('Starting contributor analysis...');
+		
+		// Initialize database first
+		await initializeDatabase();
+		
+		// Then run the search
+		await searchRepositoriesWithStats(KEYWORD);
+		
 		// Close the database connection when done
 		console.log('Closing database connection...');
-		try {
-			await closeDatabase(db);
-			console.log('Database connection closed');
-		} catch (err) {
-			console.error(`Error closing database: ${err.message}`);
-			process.exit(1);
-		}
-	})
-	.catch(async error => {
+		await closeDatabase(db);
+		console.log('Database connection closed');
+	} catch (error) {
 		console.error('Error in main process:', error);
 		// Ensure database is closed even on error
 		try {
-			await closeDatabase(db);
+			if (db) {
+				await closeDatabase(db);
+			}
 		} catch (err) {
 			console.error(`Error closing database: ${err.message}`);
 		}
-	});
+		process.exit(1);
+	}
+}
+
+// Run the application
+main();
