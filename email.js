@@ -67,7 +67,7 @@ function closeDatabase(db) {
 
 // Initialize nodemailer with Mailtrap SMTP
 function createMailTransporter() {
-	return nodemailer.createTransporter({
+	return nodemailer.createTransport({
 		host: 'send.api.mailtrap.io',
 		port: 587,
 		secure: false,
