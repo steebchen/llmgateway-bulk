@@ -296,8 +296,6 @@ async function searchRepositoriesWithStats(keyword) {
 		const contributorStats = new Map(); // email -> { count, repos, lastCommitDate }
 
 		for (const repo of allRepos) {
-			await sleep(1000);
-
 			// Check if this repository has already been processed
 			const alreadyProcessed = await isRepoProcessed(repo.full_name);
 			if (alreadyProcessed) {
@@ -305,6 +303,8 @@ async function searchRepositoriesWithStats(keyword) {
 				continue;
 			}
 
+			// Only sleep before making actual GitHub API calls
+			await sleep(1000);
 			console.log(`Fetching commits for ${repo.full_name}...`);
 
 			try {
