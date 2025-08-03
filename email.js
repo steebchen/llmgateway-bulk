@@ -15,7 +15,7 @@ const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) 
 // Email configuration
 const FROM_EMAIL = process.env.FROM_EMAIL || 'hello@llmgateway.io';
 const FROM_NAME = process.env.FROM_NAME || 'LLMGateway Team';
-const EMAIL_SUBJECT = process.env.EMAIL_SUBJECT || 'Self-hosted AI Gateway alternative to OpenRouter';
+const EMAIL_SUBJECT = process.env.EMAIL_SUBJECT || 'The actual "Open" alternative to OpenRouter';
 
 // Utility functions to promisify sqlite3 operations
 function openDatabase(dbPath) {
@@ -161,7 +161,7 @@ Stars: ${repoInfo.stars}
 README content:
 ${repoInfo.readme}
 
-Provide a concise summary focusing on the project's core functionality and use case.`;
+Provide a concise summary focusing on the project's core functionality and use case. Do not include the product name again especially not at leading, it should be a natural description of the project. Keep it very subtle and short, max 200 chars.`;
 
 		const response = await fetch('https://api.llmgateway.io/v1/chat/completions', {
 			method: 'POST',
@@ -176,9 +176,7 @@ Provide a concise summary focusing on the project's core functionality and use c
 						role: 'user',
 						content: prompt
 					}
-				],
-				max_tokens: 200,
-				temperature: 0.7
+				]
 			})
 		});
 
@@ -187,10 +185,11 @@ Provide a concise summary focusing on the project's core functionality and use c
 		}
 
 		const data = await response.json();
+
+		console.log('data', data);
 		return data.choices[0].message.content.trim();
 	} catch (error) {
-		console.error('Error analyzing repository:', error.message);
-		return `${repoInfo.name} - ${repoInfo.description || 'A GitHub repository'}`;
+		throw new Error(`Error analyzing repository: ${error.message}`);
 	}
 }
 
@@ -200,7 +199,7 @@ function generatePersonalizedEmail(repoAnalysis, repoInfo) {
 
 I came across your work on ${repoInfo.fullName} and was impressed by what you've built. ${repoAnalysis}
 
-I wanted to reach out because I noticed you might be using OpenRouter or similar AI gateway services for your projects. We've built LLMGateway (https://llmgateway.io) - a self-hosted alternative that gives you:
+I wanted to reach out because I noticed you might be using OpenRouter for your project. We've built LLMGateway (https://llmgateway.io) - a self-hosted alternative that gives you:
 
 • Complete control over your AI infrastructure
 • Deep analytics and usage insights
