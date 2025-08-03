@@ -5,7 +5,8 @@ const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const nodemailer = require('nodemailer');
 
-const MAILTRAP_API_KEY = process.env.MAILTRAP_API_KEY;
+const SMTP_USERNAME = process.env.SMTP_USERNAME;
+const SMTP_PASSWORD = process.env.SMTP_PASSWORD;
 const LLMGATEWAY_API_KEY = process.env.LLMGATEWAY_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const EMAIL_COUNT = parseInt(process.env.EMAIL_COUNT) || 10;
@@ -258,8 +259,8 @@ async function main() {
 		console.log(`📧 Target: ${EMAIL_COUNT} emails`);
 
 		// Validate required environment variables
-		if (!MAILTRAP_API_KEY) {
-			throw new Error('MAILTRAP_API_KEY environment variable is required');
+		if (!SMTP_USERNAME || !SMTP_PASSWORD) {
+			throw new Error('SMTP_USERNAME and SMTP_PASSWORD environment variables are required');
 		}
 		if (!LLMGATEWAY_API_KEY) {
 			throw new Error('LLMGATEWAY_API_KEY environment variable is required');
