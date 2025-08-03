@@ -132,9 +132,24 @@ async function initializeDatabase() {
 				id INTEGER PRIMARY KEY CHECK (id = 1),
 				keyword TEXT,
 				current_page INTEGER,
+				date_range TEXT,
+				date_segments TEXT,
+				current_segment INTEGER DEFAULT 0,
 				last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 			)
 		`);
+
+		// Add new columns if they don't exist (for existing databases)
+		try {
+			await runQuery(db, `ALTER TABLE request_state ADD COLUMN date_range TEXT`);
+			await runQuery(db, `ALTER TABLE request_state ADD COLUMN date_segments TEXT`);
+			await runQuery(db, `ALTER TABLE request_state ADD COLUMN current_segment INTEGER DEFAULT 0`);
+		} catch (err) {
+			// Columns already exist, ignore errors
+			if (!err.message.includes('duplicate column name')) {
+				throw err;
+			}
+		}
 
 		console.log('Database initialized successfully');
 	} catch (err) {
@@ -174,22 +189,29 @@ async function saveEmail(email, repoName) {
 // Function to get saved state from database
 async function getSavedState() {
 	try {
-		return await getQuery(db, 'SELECT keyword, current_page FROM request_state WHERE id = 1');
+		const state = await getQuery(db, 'SELECT keyword, current_page, date_range, date_segments, current_segment FROM request_state WHERE id = 1');
+		if (state && state.date_range) {
+			state.date_range = JSON.parse(state.date_range);
+		}
+		if (state && state.date_segments) {
+			state.date_segments = JSON.parse(state.date_segments);
+		}
+		return state;
 	} catch (err) {
 		console.error(`Error getting saved state: ${err.message}`);
 		return null;
 	}
 }
 
-// Function to save current state to database
-async function saveState(keyword, page) {
+// Function to save current state to database with date range support
+async function saveState(keyword, page, dateRange = null) {
 	try {
 		await runQuery(
 			db,
-			'INSERT OR REPLACE INTO request_state (id, keyword, current_page, last_updated) VALUES (1, ?, ?, CURRENT_TIMESTAMP)',
-			[keyword, page]
+			'INSERT OR REPLACE INTO request_state (id, keyword, current_page, date_range, last_updated) VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)',
+			[keyword, page, dateRange ? JSON.stringify(dateRange) : null]
 		);
-		console.log(`Saved state: keyword=${keyword}, page=${page}`);
+		console.log(`Saved state: keyword=${keyword}, page=${page}${dateRange ? `, dateRange=${dateRange.start} to ${dateRange.end}` : ''}`);
 	} catch (err) {
 		console.error(`Error saving state: ${err.message}`);
 		throw err;
@@ -207,9 +229,36 @@ async function isRepoProcessed(repoName) {
 	}
 }
 
-// Enhanced version that also provides commit statistics
-async function searchRepositoriesWithStats(keyword) {
-	const baseUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(keyword)}`;
+// Generate date segments to bypass GitHub's 1000 result limit
+function generateDateSegments(startDate, endDate, segmentDays = 30) {
+	const segments = [];
+	const current = new Date(startDate);
+	const end = new Date(endDate);
+	
+	while (current <= end) {
+		const segmentEnd = new Date(current);
+		segmentEnd.setDate(segmentEnd.getDate() + segmentDays - 1);
+		
+		if (segmentEnd > end) {
+			segmentEnd.setTime(end.getTime());
+		}
+		
+		segments.push({
+			start: current.toISOString().split('T')[0],
+			end: segmentEnd.toISOString().split('T')[0]
+		});
+		
+		current.setDate(current.getDate() + segmentDays);
+	}
+	
+	return segments;
+}
+
+// Search repositories within a specific date range
+async function searchRepositoriesInDateRange(keyword, dateRange) {
+	const dateQuery = `created:${dateRange.start}..${dateRange.end}`;
+	const searchQuery = `${keyword} ${dateQuery}`;
+	const baseUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(searchQuery)}`;
 	const headers = {
 		'Accept': 'application/vnd.github+json',
 		'Authorization': `Bearer ${GITHUB_TOKEN}`
@@ -218,82 +267,175 @@ async function searchRepositoriesWithStats(keyword) {
 	let allRepos = [];
 	let page = 1;
 	let hasMoreResults = true;
-
-	// Check for saved state
-	const savedState = await getSavedState();
-	if (savedState && savedState.keyword === keyword) {
-		page = savedState.current_page;
-		console.log(`Resuming from page ${page} for keyword "${keyword}"`);
-		
-		// If saved page is beyond GitHub's limit, we're done
-		if (page > 10) {
-			console.log(`Saved page ${page} exceeds GitHub's limit of 10 pages. All available data has been processed.`);
-			await runQuery(db, 'DELETE FROM request_state WHERE id = 1');
-			console.log('State cleared - processing was already complete.');
-			return [];
-		}
-	}
-
+	let totalCount = 0;
 
 	try {
-		// Get total count from first page to log how many pages we expect (only if starting fresh)
-		let actualTotalPages;
-		if (page === 1) {
-			const initialUrl = `${baseUrl}&per_page=${PER_PAGE}&page=1`;
-			const initialResponse = await fetch(initialUrl, { headers });
-			if (!initialResponse.ok) {
-				throw new Error(`GitHub API error: ${initialResponse.status} ${initialResponse.statusText}`);
-			}
-			const initialData = await initialResponse.json();
-			const totalCount = Math.min(initialData.total_count, MAX_RESULTS);
-			actualTotalPages = Math.ceil(Math.min(initialData.total_count, 1000) / PER_PAGE); // GitHub's 1000 limit
-			const targetPages = Math.ceil(totalCount / PER_PAGE);
-			console.log(`Total repositories found: ${initialData.total_count}, processing up to ${totalCount} (${targetPages} pages of ${actualTotalPages} available)`);
-
-			// Use the data from this call for the first iteration
-			const remainingSlots = MAX_RESULTS - allRepos.length;
-			const reposToAdd = initialData.items.slice(0, remainingSlots);
-			allRepos.push(...reposToAdd);
-			hasMoreResults = initialData.items.length === PER_PAGE && allRepos.length < MAX_RESULTS;
-			page++;
-			await saveState(keyword, page);
-			if (hasMoreResults) {
-				await new Promise(resolve => setTimeout(resolve, 100));
-			}
-		} else {
-			actualTotalPages = 10; // Assume GitHub's max 1000/100 = 10 pages when resuming
-			console.log(`Resuming from page ${page}, assuming max ${actualTotalPages} pages available`);
+		// Get total count from first page
+		const initialUrl = `${baseUrl}&per_page=${PER_PAGE}&page=1`;
+		const initialResponse = await fetch(initialUrl, { headers });
+		if (!initialResponse.ok) {
+			throw new Error(`GitHub API error: ${initialResponse.status} ${initialResponse.statusText}`);
 		}
-
-		while (hasMoreResults && allRepos.length < MAX_RESULTS && page <= 10) {
+		const initialData = await initialResponse.json();
+		totalCount = initialData.total_count;
+		
+		console.log(`  Date range ${dateRange.start} to ${dateRange.end}: ${totalCount} repositories`);
+		
+		// If more than 1000 results, we need to split this range further
+		if (totalCount > 1000) {
+			console.log(`  ⚠️  Range has ${totalCount} results (>1000), needs further segmentation`);
+			return { repos: [], needsSplit: true, totalCount };
+		}
+		
+		// Process all pages for this date range
+		allRepos.push(...initialData.items);
+		hasMoreResults = initialData.items.length === PER_PAGE;
+		page++;
+		
+		if (hasMoreResults) {
+			await sleep(500);
+		}
+		
+		while (hasMoreResults && page <= 10) {
 			const url = `${baseUrl}&per_page=${PER_PAGE}&page=${page}`;
-			console.log(`Fetching repositories page ${page} of ${actualTotalPages}...`);
-
+			
 			const response = await fetch(url, { headers });
 			if (!response.ok) {
 				throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
 			}
-
+			
 			const data = await response.json();
-			const remainingSlots = MAX_RESULTS - allRepos.length;
-			const reposToAdd = data.items.slice(0, remainingSlots);
-			allRepos.push(...reposToAdd);
-
-			hasMoreResults = data.items.length === PER_PAGE && allRepos.length < MAX_RESULTS;
-
+			allRepos.push(...data.items);
+			
+			hasMoreResults = data.items.length === PER_PAGE;
 			page++;
-
-			// Save current state after moving to next page
-			await saveState(keyword, page);
-
+			
 			if (hasMoreResults) {
-				await new Promise(resolve => setTimeout(resolve, 100));
+				await sleep(500);
+			}
+		}
+		
+		return { repos: allRepos, needsSplit: false, totalCount };
+		
+	} catch (error) {
+		console.error(`Error searching date range ${dateRange.start} to ${dateRange.end}:`, error.message);
+		return { repos: [], needsSplit: false, totalCount: 0 };
+	}
+}
+
+// Enhanced version that also provides commit statistics with date segmentation
+async function searchRepositoriesWithStats(keyword) {
+	let allRepos = [];
+	let dateSegments = [];
+	let currentSegment = 0;
+
+	// Check for saved state
+	const savedState = await getSavedState();
+	if (savedState && savedState.keyword === keyword) {
+		if (savedState.date_segments) {
+			dateSegments = savedState.date_segments;
+			currentSegment = savedState.current_segment || 0;
+			console.log(`Resuming from segment ${currentSegment + 1} of ${dateSegments.length} for keyword "${keyword}"`);
+		} else {
+			console.log('Found old state format, starting fresh with date segmentation');
+			await runQuery(db, 'DELETE FROM request_state WHERE id = 1');
+		}
+	}
+
+	try {
+		// Generate date segments if not resuming
+		if (dateSegments.length === 0) {
+			console.log('🗓️  Generating date segments to bypass GitHub\'s 1000 result limit...');
+			
+			// Start from 2008 (GitHub's founding) to today
+			const startDate = new Date('2008-01-01');
+			const endDate = new Date();
+			
+			// Start with 6-month segments
+			dateSegments = generateDateSegments(startDate, endDate, 180);
+			console.log(`Generated ${dateSegments.length} date segments (6-month periods)`);
+			
+			// Save initial state
+			await runQuery(
+				db,
+				'INSERT OR REPLACE INTO request_state (id, keyword, current_page, date_segments, current_segment, last_updated) VALUES (1, ?, 1, ?, 0, CURRENT_TIMESTAMP)',
+				[keyword, JSON.stringify(dateSegments)]
+			);
+		}
+
+		// Process each date segment
+		for (let i = currentSegment; i < dateSegments.length; i++) {
+			const segment = dateSegments[i];
+			console.log(`\n📅 Processing segment ${i + 1}/${dateSegments.length}: ${segment.start} to ${segment.end}`);
+			
+			const result = await searchRepositoriesInDateRange(keyword, segment);
+			
+			if (result.needsSplit) {
+				// Split this segment into smaller chunks (1 month)
+				console.log(`  🔄 Splitting segment into smaller chunks...`);
+				const subSegments = generateDateSegments(new Date(segment.start), new Date(segment.end), 30);
+				
+				for (const subSegment of subSegments) {
+					console.log(`  📅 Processing sub-segment: ${subSegment.start} to ${subSegment.end}`);
+					const subResult = await searchRepositoriesInDateRange(keyword, subSegment);
+					
+					if (subResult.needsSplit) {
+						// Split further into weekly chunks
+						console.log(`    🔄 Sub-segment still too large, splitting into weeks...`);
+						const weeklySegments = generateDateSegments(new Date(subSegment.start), new Date(subSegment.end), 7);
+						
+						for (const weekSegment of weeklySegments) {
+							console.log(`    📅 Processing weekly segment: ${weekSegment.start} to ${weekSegment.end}`);
+							const weekResult = await searchRepositoriesInDateRange(keyword, weekSegment);
+							allRepos.push(...weekResult.repos);
+							await sleep(500); // Rate limiting
+						}
+					} else {
+						allRepos.push(...subResult.repos);
+					}
+					await sleep(500); // Rate limiting
+				}
+			} else {
+				allRepos.push(...result.repos);
+			}
+			
+			// Update progress
+			await runQuery(
+				db,
+				'UPDATE request_state SET current_segment = ?, last_updated = CURRENT_TIMESTAMP WHERE id = 1',
+				[i + 1]
+			);
+			
+			await sleep(1000); // Increased rate limiting between segments
+			
+			// Check if we've reached MAX_RESULTS
+			if (allRepos.length >= MAX_RESULTS) {
+				allRepos = allRepos.slice(0, MAX_RESULTS);
+				console.log(`\n✅ Reached MAX_RESULTS limit of ${MAX_RESULTS} repositories`);
+				break;
 			}
 		}
 
-		console.log(`\nFound ${allRepos.length} repositories`);
+		// Remove duplicates (repositories might appear in multiple date ranges)
+		const uniqueRepos = [];
+		const seenRepos = new Set();
+		for (const repo of allRepos) {
+			if (!seenRepos.has(repo.full_name)) {
+				seenRepos.add(repo.full_name);
+				uniqueRepos.push(repo);
+			}
+		}
+		allRepos = uniqueRepos;
+
+		console.log(`\n🎉 Found ${allRepos.length} unique repositories across all date segments`);
 
 		const contributorStats = new Map(); // email -> { count, repos, lastCommitDate }
+
+		// Define headers for commit fetching
+		const headers = {
+			'Accept': 'application/vnd.github+json',
+			'Authorization': `Bearer ${GITHUB_TOKEN}`
+		};
 
 		for (const repo of allRepos) {
 			// Check if this repository has already been processed
@@ -378,18 +520,22 @@ async function searchRepositoriesWithStats(keyword) {
 			console.log('');
 		});
 
-		// Delete state after successful completion (all available pages processed)
+		// Delete state after successful completion (all segments processed)
 		await runQuery(db, 'DELETE FROM request_state WHERE id = 1');
-		console.log('Processing complete. State cleared - all available pages processed.');
+		console.log('✅ Processing complete. State cleared - all date segments processed.');
 
 		return sortedContributors.map(([email]) => email);
 
 	} catch (error) {
 		console.error('Error fetching data:', error.message);
 		// Save current state to allow resuming from this point
-		if (page > 1) {
-			await saveState(keyword, page);
-			console.log(`Error occurred. State saved at page ${page} for resuming later.`);
+		if (currentSegment > 0) {
+			await runQuery(
+				db,
+				'UPDATE request_state SET current_segment = ?, last_updated = CURRENT_TIMESTAMP WHERE id = 1',
+				[currentSegment]
+			);
+			console.log(`❌ Error occurred. State saved at segment ${currentSegment + 1} for resuming later.`);
 		}
 	}
 }
