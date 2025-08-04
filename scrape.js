@@ -393,7 +393,100 @@ async function searchRepositoriesWithStats(keyword) {
 			);
 		}
 
-		// Process each date segment
+		const contributorStats = new Map(); // email -> { count, repos, lastCommitDate }
+		const seenRepos = new Set(); // Track processed repos to avoid duplicates
+		let totalReposProcessed = 0;
+
+		// Define headers for commit fetching
+		const headers = {
+			'Accept': 'application/vnd.github+json',
+			'Authorization': `Bearer ${GITHUB_TOKEN}`
+		};
+
+		// Process repositories in batches as we find them
+		async function processBatchOfRepos(repos, segmentInfo) {
+			console.log(`\n🔄 Processing batch of ${repos.length} repositories from ${segmentInfo}`);
+			
+			for (let repoIndex = 0; repoIndex < repos.length; repoIndex++) {
+				const repo = repos[repoIndex];
+				
+				// Skip duplicates
+				if (seenRepos.has(repo.full_name)) {
+					continue;
+				}
+				seenRepos.add(repo.full_name);
+
+				// Check if this repository has already been processed
+				const alreadyProcessed = await isRepoProcessed(repo.full_name);
+				if (alreadyProcessed) {
+					console.log(`  Skipping ${repo.full_name} (already processed)`);
+					continue;
+				}
+
+				totalReposProcessed++;
+				
+				// Rate limiting before API call
+				await sleep(1000);
+				console.log(`  [${totalReposProcessed}] Fetching commits for ${repo.full_name}...`);
+
+				try {
+					const commitsUrl = `https://api.github.com/repos/${repo.full_name}/commits?per_page=${COMMITS_PER_REPO}`;
+					const commitsResponse = await fetch(commitsUrl, { headers });
+
+					if (!commitsResponse.ok) {
+						console.log(`    Skipping ${repo.full_name} (${commitsResponse.status})`);
+						continue;
+					}
+
+					const commits = await commitsResponse.json();
+
+					// Process commits and save emails immediately
+					for (const commit of commits) {
+						if (commit.commit && commit.commit.author && commit.commit.author.email) {
+							const email = commit.commit.author.email;
+							const commitDate = new Date(commit.commit.author.date);
+
+							// Save to database immediately when first encountered
+							if (!contributorStats.has(email)) {
+								contributorStats.set(email, {
+									count: 0,
+									repos: new Set(),
+									lastCommitDate: commitDate,
+									isNoreply: email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@')
+								});
+
+								// Save to database immediately
+								await saveEmail(email, repo.full_name, keyword);
+							}
+
+							const stats = contributorStats.get(email);
+							stats.count++;
+							stats.repos.add(repo.full_name);
+
+							if (commitDate > stats.lastCommitDate) {
+								stats.lastCommitDate = commitDate;
+							}
+						}
+					}
+
+					console.log(`    Found ${commits.length} commits`);
+
+				} catch (error) {
+					console.log(`    Error fetching commits for ${repo.full_name}: ${error.message}`);
+				}
+
+				await sleep(200); // Brief pause between repos
+				
+				// Check if we've reached MAX_RESULTS
+				if (totalReposProcessed >= MAX_RESULTS) {
+					console.log(`\n✅ Reached MAX_RESULTS limit of ${MAX_RESULTS} repositories`);
+					return true; // Signal to stop processing
+				}
+			}
+			return false; // Continue processing
+		}
+
+		// Process each date segment and its repositories immediately
 		for (let i = currentSegment; i < dateSegments.length; i++) {
 			const segment = dateSegments[i];
 			console.log(`\n📅 Processing segment ${i + 1}/${dateSegments.length}: ${segment.start} to ${segment.end}`);
@@ -417,16 +510,20 @@ async function searchRepositoriesWithStats(keyword) {
 						for (const weekSegment of weeklySegments) {
 							console.log(`    📅 Processing weekly segment: ${weekSegment.start} to ${weekSegment.end}`);
 							const weekResult = await searchRepositoriesInDateRange(keyword, weekSegment);
-							allRepos.push(...weekResult.repos);
+							const shouldStop = await processBatchOfRepos(weekResult.repos, `weekly segment ${weekSegment.start} to ${weekSegment.end}`);
+							if (shouldStop) break;
 							await sleep(500); // Rate limiting
 						}
 					} else {
-						allRepos.push(...subResult.repos);
+						const shouldStop = await processBatchOfRepos(subResult.repos, `sub-segment ${subSegment.start} to ${subSegment.end}`);
+						if (shouldStop) break;
 					}
 					await sleep(500); // Rate limiting
+					if (totalReposProcessed >= MAX_RESULTS) break;
 				}
 			} else {
-				allRepos.push(...result.repos);
+				const shouldStop = await processBatchOfRepos(result.repos, `segment ${segment.start} to ${segment.end}`);
+				if (shouldStop) break;
 			}
 
 			// Update progress
@@ -439,107 +536,15 @@ async function searchRepositoriesWithStats(keyword) {
 			await sleep(1000); // Increased rate limiting between segments
 
 			// Check if we've reached MAX_RESULTS
-			if (allRepos.length >= MAX_RESULTS) {
-				allRepos = allRepos.slice(0, MAX_RESULTS);
+			if (totalReposProcessed >= MAX_RESULTS) {
 				console.log(`\n✅ Reached MAX_RESULTS limit of ${MAX_RESULTS} repositories`);
 				break;
 			}
 		}
 
-		// Remove duplicates (repositories might appear in multiple date ranges)
-		const uniqueRepos = [];
-		const seenRepos = new Set();
-		for (const repo of allRepos) {
-			if (!seenRepos.has(repo.full_name)) {
-				seenRepos.add(repo.full_name);
-				uniqueRepos.push(repo);
-			}
-		}
-		allRepos = uniqueRepos;
-
-		console.log(`\n🎉 Found ${allRepos.length} unique repositories across all date segments`);
-
-		const contributorStats = new Map(); // email -> { count, repos, lastCommitDate }
-
-		// Define headers for commit fetching
-		const headers = {
-			'Accept': 'application/vnd.github+json',
-			'Authorization': `Bearer ${GITHUB_TOKEN}`
-		};
-
-		// Save initial processing state
-		await saveProcessingState(keyword, dateSegments, currentSegment, resumingRepoIndex, allRepos.length);
-
-		for (let repoIndex = resumingRepoIndex; repoIndex < allRepos.length; repoIndex++) {
-			const repo = allRepos[repoIndex];
-			// Check if this repository has already been processed
-			const alreadyProcessed = await isRepoProcessed(repo.full_name);
-			if (alreadyProcessed) {
-				console.log(`Skipping ${repo.full_name} (already processed)`);
-				continue;
-			}
-
-			// Save state before processing each repository
-			await saveProcessingState(keyword, dateSegments, currentSegment, repoIndex, allRepos.length);
-
-			// Only sleep before making actual GitHub API calls
-			await sleep(1000);
-			console.log(`[${repoIndex + 1}/${allRepos.length}] Fetching commits for ${repo.full_name}...`);
-
-			try {
-				const commitsUrl = `https://api.github.com/repos/${repo.full_name}/commits?per_page=${COMMITS_PER_REPO}`;
-				const commitsResponse = await fetch(commitsUrl, { headers });
-
-				if (!commitsResponse.ok) {
-					console.log(`  Skipping ${repo.full_name} (${commitsResponse.status})`);
-					continue;
-				}
-
-				const commits = await commitsResponse.json();
-
-				// Collect contributor statistics
-				commits.forEach(commit => {
-					if (commit.commit && commit.commit.author && commit.commit.author.email) {
-						const email = commit.commit.author.email;
-						const commitDate = new Date(commit.commit.author.date);
-
-						// Include all emails in stats, even noreply ones
-						if (!contributorStats.has(email)) {
-							contributorStats.set(email, {
-								count: 0,
-								repos: new Set(),
-								lastCommitDate: commitDate,
-								isNoreply: email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@')
-							});
-
-							// Save to database when first encountered
-							// This will handle duplicate prevention internally
-							// We don't need to await this since we don't need to wait for each email to be saved
-							// before processing the next one, and the function handles errors internally
-							saveEmail(email, repo.full_name, keyword);
-						}
-
-						const stats = contributorStats.get(email);
-						stats.count++;
-						stats.repos.add(repo.full_name);
-
-						if (commitDate > stats.lastCommitDate) {
-							stats.lastCommitDate = commitDate;
-						}
-					}
-				});
-
-				console.log(`  Found ${commits.length} commits`);
-
-			} catch (error) {
-				console.log(`  Error fetching commits for ${repo.full_name}: ${error.message}`);
-			}
-
-			await new Promise(resolve => setTimeout(resolve, 200));
-		}
-
 		// Display detailed results
 		console.log(`\n=== CONTRIBUTOR STATISTICS ===`);
+		console.log(`Total repositories processed: ${totalReposProcessed}`);
 		console.log(`Total unique contributors: ${contributorStats.size}`);
 		console.log(`Emails saved to SQLite database: ${DB_PATH}`);
 
@@ -566,9 +571,9 @@ async function searchRepositoriesWithStats(keyword) {
 	} catch (error) {
 		console.error('Error fetching data:', error.message);
 		// Save current state to allow resuming from this point
-		if (currentSegment > 0 || resumingRepoIndex > 0) {
-			await saveProcessingState(keyword, dateSegments, currentSegment, resumingRepoIndex, allRepos.length);
-			console.log(`❌ Error occurred. State saved at segment ${currentSegment + 1}, repo ${resumingRepoIndex} for resuming later.`);
+		if (currentSegment > 0 || totalReposProcessed > 0) {
+			await saveProcessingState(keyword, dateSegments || [], currentSegment, totalReposProcessed, totalReposProcessed);
+			console.log(`❌ Error occurred. State saved at segment ${currentSegment + 1}, processed ${totalReposProcessed} repositories for resuming later.`);
 		}
 	}
 }
