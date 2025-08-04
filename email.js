@@ -188,7 +188,6 @@ Write a natural, conversational description that would fit perfectly after "I wa
 
 		const data = await response.json();
 
-		console.log('data', data);
 		return data.choices[0].message.content.trim();
 	} catch (error) {
 		throw new Error(`Error analyzing repository: ${error.message}`);
