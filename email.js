@@ -151,17 +151,19 @@ async function fetchRepoInfo(repoName) {
 // Analyze repository using LLMGateway
 async function analyzeRepository(repoInfo) {
 	try {
-		const prompt = `Analyze this GitHub repository and provide a brief 2-3 sentence summary of what the project does and its main purpose:
+		const prompt = `Analyze this GitHub repository and write a natural 2-3 sentence description that flows well in an email. The description should naturally mention if the project likely uses AI/LLM services or APIs, and seamlessly work in a sentence like "I came across your work on [repo] and was impressed by what you've built. [YOUR DESCRIPTION]"
 
 Repository: ${repoInfo.fullName}
 Description: ${repoInfo.description}
 Language: ${repoInfo.language}
 Stars: ${repoInfo.stars}
 
+DO NOT include the "I came across your work" in the output.
+
 README content:
 ${repoInfo.readme}
 
-Provide a concise summary focusing on the project's core functionality and use case. Do not include the product name again especially not at leading, it should be a natural description of the project. Keep it very subtle and short, max 200 chars.`;
+Write a natural, conversational description that would fit perfectly after "I was impressed by what you've built." Focus on what makes the project interesting and mention AI/LLM usage if relevant. Keep it under 120 chars and make it sound genuine and personal.`;
 
 		const response = await fetch('https://api.llmgateway.io/v1/chat/completions', {
 			method: 'POST',
@@ -197,19 +199,17 @@ Provide a concise summary focusing on the project's core functionality and use c
 function generatePersonalizedEmail(repoAnalysis, repoInfo) {
 	return `Hi there!
 
-I came across your work on ${repoInfo.fullName} and was impressed by what you've built. ${repoAnalysis}
+I came across your work on ${repoInfo.fullName} and was impressed by what you've built. ${repoAnalysis}'
 
-I wanted to reach out because I noticed you might be using OpenRouter for your project. We've built LLMGateway (https://llmgateway.io) - a self-hosted alternative that gives you:
+Given the nature of your project, I thought you might find LLMGateway (https://llmgateway.io) interesting - it's a self-hosted alternative to OpenRouter (read the full email for free credits!) that gives you:
 
-• Complete control over your AI infrastructure
+• Fully open source & self-hostable
 • Deep analytics and usage insights
-• Cost optimization through intelligent routing
-• No vendor lock-in - deploy anywhere
-• Enterprise-grade security and compliance
+• Intelligent routing for cost & performance optimization
 
 Unlike hosted services, LLMGateway can be deployed in your own environment, giving you full visibility into costs, usage patterns, and model performance. This is particularly valuable for production applications where you need predictable costs and complete data control.
 
-Would you be interested in learning more about how LLMGateway could benefit your ${repoInfo.language} projects? I'd be happy to show you a quick demo or answer any questions.
+We also have a hosted version of LLMGateway to get started quickly. Just reply here with your registered email and I'll give you a few credits for free to try it out.
 
 Best regards,
 ${FROM_NAME}
