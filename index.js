@@ -106,6 +106,7 @@ async function initializeDatabase() {
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				email TEXT UNIQUE,
 				repo_name TEXT,
+				keyword TEXT,
 				ignore BOOLEAN,
 				approved BOOLEAN DEFAULT 0,
 				sent BOOLEAN DEFAULT 0,
@@ -138,6 +139,17 @@ async function initializeDatabase() {
 			}
 		}
 
+		// Add keyword column if it doesn't exist (for existing databases)
+		try {
+			await runQuery(db, `ALTER TABLE emails ADD COLUMN keyword TEXT`);
+			console.log('Added keyword column to existing emails table');
+		} catch (err) {
+			// Column already exists, ignore the error
+			if (!err.message.includes('duplicate column name')) {
+				throw err;
+			}
+		}
+
 		// Create state table to store the last request information
 		await runQuery(db, `
 			CREATE TABLE IF NOT EXISTS request_state (
@@ -161,14 +173,14 @@ async function initializeDatabase() {
 }
 
 // Function to save email to database (only first occurrence)
-async function saveEmail(email, repoName) {
+async function saveEmail(email, repoName, keyword) {
 	// Determine if email should be ignored (contains "noreply" or doesn't have @)
 	const shouldIgnore = email.toLowerCase().includes('noreply') || !email.toLowerCase().includes('@');
 
 	try {
 		// Use INSERT OR IGNORE to prevent duplicate entries - only saves first occurrence
-		const stmt = prepareStatement(db, 'INSERT OR IGNORE INTO emails (email, repo_name, ignore) VALUES (?, ?, ?)');
-		const result = await runStatement(stmt, [email, repoName, shouldIgnore ? 1 : 0]);
+		const stmt = prepareStatement(db, 'INSERT OR IGNORE INTO emails (email, repo_name, keyword, ignore) VALUES (?, ?, ?, ?)');
+		const result = await runStatement(stmt, [email, repoName, keyword, shouldIgnore ? 1 : 0]);
 		await finalizeStatement(stmt);
 
 		// result.changes tells us if a row was inserted (1) or not (0)
@@ -504,7 +516,7 @@ async function searchRepositoriesWithStats(keyword) {
 							// This will handle duplicate prevention internally
 							// We don't need to await this since we don't need to wait for each email to be saved
 							// before processing the next one, and the function handles errors internally
-							saveEmail(email, repo.full_name);
+							saveEmail(email, repo.full_name, keyword);
 						}
 
 						const stats = contributorStats.get(email);
