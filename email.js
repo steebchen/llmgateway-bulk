@@ -158,7 +158,7 @@ Description: ${repoInfo.description}
 Language: ${repoInfo.language}
 Stars: ${repoInfo.stars}
 
-DO NOT include the "I came across your work" in the output.
+DO NOT include the "I came across your work" in the output. Make sure the description is as accurate as possible.
 
 README content:
 ${repoInfo.readme}
@@ -198,7 +198,7 @@ Write a natural, conversational description that would fit perfectly after "I wa
 function generatePersonalizedEmail(repoAnalysis, repoInfo) {
 	return `Hi there!
 
-I came across your work on ${repoInfo.fullName} and was impressed by what you've built. ${repoAnalysis}'
+I came across your work on ${repoInfo.fullName} and was impressed by what you've built. ${repoAnalysis}
 
 Given the nature of your project, I thought you might find LLMGateway (https://llmgateway.io) interesting - it's a self-hosted alternative to OpenRouter (read the full email for free credits!) that gives you:
 
