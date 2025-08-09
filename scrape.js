@@ -178,6 +178,30 @@ async function initializeDatabase() {
 			}
 		}
 
+		// Add full_name column if it doesn't exist (for existing databases)
+		try {
+			await runQuery(db, `ALTER TABLE emails
+				ADD COLUMN full_name TEXT`);
+			console.log("Added full_name column to existing emails table");
+		} catch (err) {
+			// Column already exists, ignore the error
+			if (!err.message.includes("duplicate column name")) {
+				throw err;
+			}
+		}
+
+		// Add github_stars column if it doesn't exist (for existing databases)
+		try {
+			await runQuery(db, `ALTER TABLE emails
+				ADD COLUMN github_stars INTEGER`);
+			console.log("Added github_stars column to existing emails table");
+		} catch (err) {
+			// Column already exists, ignore the error
+			if (!err.message.includes("duplicate column name")) {
+				throw err;
+			}
+		}
+
 		// Create state table to store the last request information
 		await runQuery(db, `
 			CREATE TABLE IF NOT EXISTS request_state
@@ -210,14 +234,14 @@ async function initializeDatabase() {
 }
 
 // Function to save email to database (only first occurrence)
-async function saveEmail(email, repoName, keyword) {
+async function saveEmail(email, repoName, keyword, fullName = null, githubStars = null) {
 	// Determine if email should be ignored (contains "noreply" or doesn't have @)
 	const shouldIgnore = email.toLowerCase().includes("noreply") || !email.toLowerCase().includes("@");
 
 	try {
 		// Use INSERT OR IGNORE to prevent duplicate entries - only saves first occurrence
-		const stmt = prepareStatement(db, "INSERT OR IGNORE INTO emails (email, repo_name, keyword, ignore) VALUES (?, ?, ?, ?)");
-		const result = await runStatement(stmt, [email, repoName, keyword, shouldIgnore ? 1 : 0]);
+		const stmt = prepareStatement(db, "INSERT OR IGNORE INTO emails (email, repo_name, keyword, ignore, full_name, github_stars) VALUES (?, ?, ?, ?, ?, ?)");
+		const result = await runStatement(stmt, [email, repoName, keyword, shouldIgnore ? 1 : 0, fullName, githubStars]);
 		await finalizeStatement(stmt);
 
 		// result.changes tells us if a row was inserted (1) or not (0)
@@ -226,9 +250,9 @@ async function saveEmail(email, repoName, keyword) {
 		} else {
 			// New email was inserted
 			if (shouldIgnore) {
-				console.log(`  Saved noreply email with ignore flag: ${email}`);
+				console.log(`  Saved noreply email with ignore flag: ${email} (${fullName || email})`);
 			} else {
-				console.log(`  Saved email: ${email}`);
+				console.log(`  Saved email: ${email} (${fullName || email}) - ${githubStars || 0} stars`);
 			}
 		}
 	} catch (error) {
@@ -482,6 +506,8 @@ async function searchRepositoriesWithStats(keyword) {
 						if (commit.commit && commit.commit.author && commit.commit.author.email) {
 							const email = commit.commit.author.email;
 							const commitDate = new Date(commit.commit.author.date);
+							// Extract full name from commit, fallback to email if not available
+							const fullName = commit.commit.author.name || email;
 
 							// Save to database immediately when first encountered
 							if (!contributorStats.has(email)) {
@@ -489,11 +515,12 @@ async function searchRepositoriesWithStats(keyword) {
 									count: 0,
 									repos: new Set(),
 									lastCommitDate: commitDate,
+									fullName: fullName,
 									isNoreply: email.toLowerCase().includes("noreply") || !email.toLowerCase().includes("@"),
 								});
 
-								// Save to database immediately
-								await saveEmail(email, repo.full_name, keyword);
+								// Save to database immediately with full name and GitHub stars
+								await saveEmail(email, repo.full_name, keyword, fullName, repo.stargazers_count);
 							}
 
 							const stats = contributorStats.get(email);
@@ -591,7 +618,7 @@ async function searchRepositoriesWithStats(keyword) {
 
 		console.log(`\nTop contributors by commit count:`);
 		sortedContributors.forEach(([email, stats], index) => {
-			console.log(`${index + 1}. ${email}${stats.isNoreply ? " [NOREPLY]" : ""}`);
+			console.log(`${index + 1}. ${stats.fullName || email} (${email})${stats.isNoreply ? " [NOREPLY]" : ""}`);
 			console.log(`   Commits: ${stats.count}`);
 			console.log(`   Repositories: ${stats.repos.size}`);
 			console.log(`   Last commit: ${stats.lastCommitDate.toISOString().split("T")[0]}`);
