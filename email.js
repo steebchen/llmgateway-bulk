@@ -412,7 +412,7 @@ async function sendEmailViaClose(toEmail, emailContent, repoInfo) {
 			to: [toEmail],
 			bcc: [],
 			cc: [],
-			status: "sent",
+			status: "outbox",
 			body_text: emailContent,
 			body_html: emailContent.replace(/\n/g, "<br>"),
 			attachments: [],
