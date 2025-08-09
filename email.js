@@ -69,7 +69,7 @@ function closeDatabase(db) {
 // Initialize nodemailer with Mailtrap SMTP
 function createMailTransporter() {
 	return nodemailer.createTransport({
-		host: "sandbox.smtp.mailtrap.io",
+		host: process.env.SMTP_HOST || "sandbox.smtp.mailtrap.io",
 		port: 2525,
 		auth: {
 			user: process.env.SMTP_USERNAME,
@@ -197,7 +197,7 @@ Write a natural, conversational description that would fit perfectly after "I wa
 // Generate personalized email content
 function generatePersonalizedEmail(repoAnalysis, repoInfo, keyword) {
 	const isOpenRouter = keyword && keyword.toLowerCase() === 'openrouter';
-	
+
 	if (isOpenRouter) {
 		return `Hi there!
 
