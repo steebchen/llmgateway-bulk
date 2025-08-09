@@ -205,7 +205,7 @@ Write a natural, conversational description that would fit perfectly after "I wa
 
 // Generate personalized email content
 function generatePersonalizedEmail(repoAnalysis, repoInfo, keyword) {
-	const isOpenRouter = keyword && keyword.toLowerCase() === 'openrouter';
+	const isOpenRouter = keyword && keyword.toLowerCase() === "openrouter";
 
 	if (isOpenRouter) {
 		return `Hi there!
@@ -269,13 +269,142 @@ async function sendEmail(transporter, toEmail, emailContent) {
 	}
 }
 
-// Send email using Close API
-async function sendEmailViaClose(toEmail, emailContent) {
+// Find or create lead by repository and ensure contact exists for email
+async function findOrCreateLead(email, repoInfo) {
 	try {
+		if (!repoInfo.fullName) {
+			throw new Error(`No repository name found for ${repoInfo}`);
+		}
+		const repoName = repoInfo.fullName;
+
+		// First, search for existing lead for this repository
+		const searchResponse = await fetch(`${CLOSE_API_URL}/lead/?query=custom.Repository:"${repoName}"`, {
+			method: "GET",
+			headers: {
+				"Authorization": `Basic ${Buffer.from(`${CLOSE_API_KEY}:`).toString("base64")}`,
+			},
+		});
+
+		if (!searchResponse.ok) {
+			throw new Error(`Failed to search for lead: ${searchResponse.status}`);
+		}
+
+		const searchData = await searchResponse.json();
+		let lead = null;
+
+		// If lead exists for this repository, use it
+		if (searchData.data && searchData.data.length > 0) {
+			lead = searchData.data[0];
+			console.log(`📋 Found existing lead for repository ${repoName}: ${lead.id}`);
+		} else {
+			// Create new lead for this repository
+			console.log(`➕ Creating new lead for repository ${repoName}...`);
+			const leadData = {
+				name: `Contributors - ${repoName}`,
+				custom: {
+					"Repository": repoName,
+					"Language": repoInfo ? repoInfo.language : "",
+					"Stars": repoInfo ? repoInfo.stars : 0,
+				},
+			};
+
+			const createResponse = await fetch(`${CLOSE_API_URL}/lead/`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"Authorization": `Basic ${Buffer.from(`${CLOSE_API_KEY}:`).toString("base64")}`,
+				},
+				body: JSON.stringify(leadData),
+			});
+
+			if (!createResponse.ok) {
+				const errorData = await createResponse.text();
+				throw new Error(`Failed to create lead: ${createResponse.status} - ${errorData}`);
+			}
+
+			lead = await createResponse.json();
+			console.log(`✅ Created new lead for repository ${repoName}: ${lead.id}`);
+		}
+
+		// Now check if contact with this email exists on this lead
+		const contactExists = lead.contacts && lead.contacts.some(contact =>
+			contact.emails && contact.emails.some(emailObj => emailObj.email === email),
+		);
+
+		if (contactExists) {
+			console.log(`📧 Contact with email ${email} already exists on lead ${lead.id}`);
+			return lead;
+		}
+
+		// Create new contact for this email on the lead
+		console.log(`➕ Adding new contact ${email} to lead ${lead.id}...`);
+		const contactData = {
+			lead_id: lead.id,
+			name: email.split("@")[0], // Use email prefix as contact name
+			emails: [{
+				email: email,
+				type: "office",
+			}],
+		};
+
+		const contactResponse = await fetch(`${CLOSE_API_URL}/contact/`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"Authorization": `Basic ${Buffer.from(`${CLOSE_API_KEY}:`).toString("base64")}`,
+			},
+			body: JSON.stringify(contactData),
+		});
+
+		if (!contactResponse.ok) {
+			const errorData = await contactResponse.text();
+			throw new Error(`Failed to create contact: ${contactResponse.status} - ${errorData}`);
+		}
+
+		const newContact = await contactResponse.json();
+		console.log(`✅ Added contact ${email} to lead: ${newContact.id}`);
+
+		// Refresh lead data to include new contact
+		const refreshResponse = await fetch(`${CLOSE_API_URL}/lead/${lead.id}/`, {
+			method: "GET",
+			headers: {
+				"Authorization": `Basic ${Buffer.from(`${CLOSE_API_KEY}:`).toString("base64")}`,
+			},
+		});
+
+		if (refreshResponse.ok) {
+			return await refreshResponse.json();
+		} else {
+			// Fallback: manually add contact to lead object
+			if (!lead.contacts) lead.contacts = [];
+			lead.contacts.push(newContact);
+			return lead;
+		}
+
+	} catch (error) {
+		console.error(`❌ Error finding/creating lead for ${email} in ${repoInfo?.fullName}:`, error.message);
+		throw error;
+	}
+}
+
+// Send email using Close API
+async function sendEmailViaClose(toEmail, emailContent, repoInfo) {
+	try {
+		// Find or create lead first
+		const lead = await findOrCreateLead(toEmail, repoInfo);
+
+		// Find the specific contact for this email
+		const contact = lead.contacts && lead.contacts.find(contact =>
+			contact.emails && contact.emails.some(emailObj => emailObj.email === toEmail),
+		);
+
+		if (!contact) {
+			throw new Error(`No contact found for email ${toEmail} on lead ${lead.id}`);
+		}
+
 		const emailPayload = {
-			// contact_id: CLOSE_CONTACT_ID,
-			// user_id: CLOSE_USER_ID,
-			// lead_id: CLOSE_LEAD_ID,
+			contact_id: contact.id,
+			lead_id: lead.id,
 			direction: "outgoing",
 			created_by_name: FROM_NAME,
 			subject: EMAIL_SUBJECT,
@@ -288,7 +417,7 @@ async function sendEmailViaClose(toEmail, emailContent) {
 			body_html: emailContent.replace(/\n/g, "<br>"),
 			attachments: [],
 			email_account_id: CLOSE_EMAIL_ACCOUNT_ID,
-			template_id: null
+			template_id: null,
 		};
 
 		const response = await fetch(`${CLOSE_API_URL}/activity/email/`, {
@@ -335,8 +464,8 @@ async function main() {
 
 		// Validate required environment variables
 		if (USE_CLOSE_API) {
-			if (!CLOSE_API_KEY || /*!CLOSE_CONTACT_ID || !CLOSE_USER_ID || !CLOSE_LEAD_ID ||*/ !CLOSE_EMAIL_ACCOUNT_ID) {
-				throw new Error("When USE_CLOSE_API=true, CLOSE_API_KEY, CLOSE_CONTACT_ID, CLOSE_USER_ID, CLOSE_LEAD_ID, and CLOSE_EMAIL_ACCOUNT_ID environment variables are required");
+			if (!CLOSE_API_KEY || !CLOSE_EMAIL_ACCOUNT_ID) {
+				throw new Error("When USE_CLOSE_API=true, CLOSE_API_KEY and CLOSE_EMAIL_ACCOUNT_ID environment variables are required");
 			}
 			console.log("📧 Using Close API for email sending");
 		} else {
@@ -411,7 +540,7 @@ async function main() {
 			// Send email
 			console.log(`📧 Sending personalized email to ${email}...`);
 			const success = USE_CLOSE_API
-				? await sendEmailViaClose(email, personalizedEmail)
+				? await sendEmailViaClose(email, personalizedEmail, repoInfo)
 				: await sendEmail(transporter, email, personalizedEmail);
 
 			if (success) {
