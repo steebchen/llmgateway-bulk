@@ -169,10 +169,11 @@ Write a natural, conversational description that would fit perfectly after "I wa
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
-				'Authorization': `Bearer ${LLMGATEWAY_API_KEY}`
+				'Authorization': `Bearer ${LLMGATEWAY_API_KEY}`,
+				'X-LLMGateway-Kind': 'bulk-email-summary',
 			},
 			body: JSON.stringify({
-				model: 'google-ai-studio/gemini-2.5-pro',
+				model: 'gpt-5-mini',
 				messages: [
 					{
 						role: 'user',
