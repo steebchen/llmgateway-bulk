@@ -82,7 +82,7 @@ function createMailTransporter() {
 async function fetchEmailsToSend(db, count) {
 	try {
 		const query = `
-			SELECT DISTINCT email, repo_name
+			SELECT DISTINCT email, repo_name, keyword
 			FROM emails
 			WHERE ignore = 0
 				AND approved = 0
@@ -195,8 +195,11 @@ Write a natural, conversational description that would fit perfectly after "I wa
 }
 
 // Generate personalized email content
-function generatePersonalizedEmail(repoAnalysis, repoInfo) {
-	return `Hi there!
+function generatePersonalizedEmail(repoAnalysis, repoInfo, keyword) {
+	const isOpenRouter = keyword && keyword.toLowerCase() === 'openrouter';
+	
+	if (isOpenRouter) {
+		return `Hi there!
 
 I came across your work on ${repoInfo.fullName} and was impressed by what you've built. ${repoAnalysis}
 
@@ -213,6 +216,26 @@ We also have a hosted version of LLMGateway to get started quickly. Just reply h
 Cheers,
 ${FROM_NAME}
 https://llmgateway.io`;
+	} else {
+		return `Hi there!
+
+I came across your work on ${repoInfo.fullName} and was impressed by what you've built. ${repoAnalysis}
+
+Given that you're working with AI, I thought you might find LLMGateway (https://llmgateway.io) interesting - instead of being locked into a single AI provider, an API gateway gives you:
+
+• Access to 200+ models from multiple providers in one unified API
+• Intelligent routing to automatically choose the best model for cost & performance
+• Deep analytics to understand usage patterns and optimize spend
+• Fallback handling when providers have outages or rate limits
+
+Unlike single-provider solutions, LLMGateway gives you flexibility to switch between providers without changing code, compare model performance side-by-side, and avoid vendor lock-in. This is particularly valuable for production applications where you need reliability and cost control.
+
+We also have a hosted version to get started quickly. Just reply here with your registered email and I'll give you a few credits for free to try it out.
+
+Cheers,
+${FROM_NAME}
+https://llmgateway.io`;
+	}
 }
 
 // Send personalized email using nodemailer
@@ -299,8 +322,9 @@ async function main() {
 			const emailRecord = emailsToSend[i];
 			const email = emailRecord.email;
 			const repoName = emailRecord.repo_name;
+			const keyword = emailRecord.keyword;
 
-			console.log(`\n[${i + 1}/${emailsToSend.length}] Processing: ${email} (${repoName})`);
+			console.log(`\n[${i + 1}/${emailsToSend.length}] Processing: ${email} (${repoName}) [${keyword}]`);
 
 			// Fetch and analyze repository
 			console.log(`📖 Fetching repository info for ${repoName}...`);
@@ -317,7 +341,7 @@ async function main() {
 			console.log(`📝 Analysis: ${repoAnalysis.substring(0, 100)}...`);
 
 			// Generate personalized email
-			const personalizedEmail = generatePersonalizedEmail(repoAnalysis, repoInfo);
+			const personalizedEmail = generatePersonalizedEmail(repoAnalysis, repoInfo, keyword);
 
 			// Send email
 			console.log(`📧 Sending personalized email to ${email}...`);
