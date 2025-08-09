@@ -91,7 +91,7 @@ function createMailTransporter() {
 async function fetchEmailsToSend(db, count) {
 	try {
 		const query = `
-			SELECT DISTINCT email, repo_name, keyword
+			SELECT DISTINCT email, repo_name, keyword, github_stars, full_name
 			FROM emails
 			WHERE ignore = 0
 				AND approved = 0
@@ -99,7 +99,7 @@ async function fetchEmailsToSend(db, count) {
 				AND email NOT LIKE '%noreply%'
 				AND email LIKE '%@%'
 				AND repo_name IS NOT NULL
-			ORDER BY created_at DESC LIMIT ?
+			ORDER BY github_stars DESC, created_at DESC LIMIT ?
 		`;
 
 		const emails = await allQuery(db, query, [count]);
@@ -517,8 +517,10 @@ async function main() {
 			const email = emailRecord.email;
 			const repoName = emailRecord.repo_name;
 			const keyword = emailRecord.keyword;
+			const githubStars = emailRecord.github_stars || 0;
+			const fullName = emailRecord.full_name;
 
-			console.log(`\n[${i + 1}/${emailsToSend.length}] Processing: ${email} (${repoName}) [${keyword}]`);
+			console.log(`\n[${i + 1}/${emailsToSend.length}] Processing: ${fullName || email} (${email}) - ${repoName} [⭐${githubStars}] [${keyword}]`);
 
 			// Fetch and analyze repository
 			console.log(`📖 Fetching repository info for ${repoName}...`);
