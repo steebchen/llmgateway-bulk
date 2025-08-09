@@ -1,21 +1,21 @@
-require('dotenv').config();
+require("dotenv").config();
 
-const fs = require('fs');
-const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
-const nodemailer = require('nodemailer');
+const fs = require("fs");
+const path = require("path");
+const sqlite3 = require("sqlite3").verbose();
+const nodemailer = require("nodemailer");
 
 const SMTP_USERNAME = process.env.SMTP_USERNAME;
 const SMTP_PASSWORD = process.env.SMTP_PASSWORD;
 const LLMGATEWAY_API_KEY = process.env.LLMGATEWAY_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const EMAIL_COUNT = parseInt(process.env.EMAIL_COUNT) || 10;
-const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, 'contributor_emails.db');
+const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, "contributor_emails.db");
 
 // Email configuration
-const FROM_EMAIL = process.env.FROM_EMAIL || 'hello@llmgateway.io';
-const FROM_NAME = process.env.FROM_NAME || 'LLMGateway Team';
-const EMAIL_SUBJECT = process.env.EMAIL_SUBJECT || 'The actual "Open" alternative to OpenRouter';
+const FROM_EMAIL = process.env.FROM_EMAIL || "hello@usellmgateway.com";
+const FROM_NAME = process.env.FROM_NAME || "Luca from LLMGateway";
+const EMAIL_SUBJECT = process.env.EMAIL_SUBJECT || "The actual \"Open\" alternative to OpenRouter";
 
 // Utility functions to promisify sqlite3 operations
 function openDatabase(dbPath) {
@@ -44,7 +44,7 @@ function allQuery(db, query, params = []) {
 
 function runQuery(db, query, params = []) {
 	return new Promise((resolve, reject) => {
-		db.run(query, params, function(err) {
+		db.run(query, params, function (err) {
 			if (err) {
 				reject(err);
 			} else {
@@ -74,7 +74,7 @@ function createMailTransporter() {
 		auth: {
 			user: process.env.SMTP_USERNAME,
 			pass: process.env.SMTP_PASSWORD,
-		}
+		},
 	});
 }
 
@@ -85,19 +85,18 @@ async function fetchEmailsToSend(db, count) {
 			SELECT DISTINCT email, repo_name
 			FROM emails
 			WHERE ignore = 0
-			AND approved = 0
-			AND email_sent = 0
-			AND email NOT LIKE '%noreply%'
-			AND email LIKE '%@%'
-			AND repo_name IS NOT NULL
-			ORDER BY created_at DESC
-			LIMIT ?
+				AND approved = 0
+				AND email_sent = 0
+				AND email NOT LIKE '%noreply%'
+				AND email LIKE '%@%'
+				AND repo_name IS NOT NULL
+			ORDER BY created_at DESC LIMIT ?
 		`;
 
 		const emails = await allQuery(db, query, [count]);
 		return emails;
 	} catch (error) {
-		console.error('Error fetching emails from database:', error.message);
+		console.error("Error fetching emails from database:", error.message);
 		throw error;
 	}
 }
@@ -106,9 +105,9 @@ async function fetchEmailsToSend(db, count) {
 async function fetchRepoInfo(repoName) {
 	try {
 		const headers = {
-			'Accept': 'application/vnd.github+json',
-			'Authorization': `Bearer ${GITHUB_TOKEN}`,
-			'User-Agent': 'LLMGateway-Outreach'
+			"Accept": "application/vnd.github+json",
+			"Authorization": `Bearer ${GITHUB_TOKEN}`,
+			"User-Agent": "LLMGateway-Outreach",
 		};
 
 		// Get repository info
@@ -119,15 +118,15 @@ async function fetchRepoInfo(repoName) {
 		const repoData = await repoResponse.json();
 
 		// Get README content
-		let readmeContent = '';
+		let readmeContent = "";
 		try {
 			const readmeResponse = await fetch(`https://api.github.com/repos/${repoName}/readme`, { headers });
 			if (readmeResponse.ok) {
 				const readmeData = await readmeResponse.json();
-				readmeContent = Buffer.from(readmeData.content, 'base64').toString('utf-8');
+				readmeContent = Buffer.from(readmeData.content, "base64").toString("utf-8");
 				// Limit README to first 2000 characters
 				if (readmeContent.length > 2000) {
-					readmeContent = readmeContent.substring(0, 2000) + '...';
+					readmeContent = readmeContent.substring(0, 2000) + "...";
 				}
 			}
 		} catch (readmeError) {
@@ -137,10 +136,10 @@ async function fetchRepoInfo(repoName) {
 		return {
 			name: repoData.name,
 			fullName: repoData.full_name,
-			description: repoData.description || '',
-			language: repoData.language || 'Unknown',
+			description: repoData.description || "",
+			language: repoData.language || "Unknown",
 			stars: repoData.stargazers_count || 0,
-			readme: readmeContent
+			readme: readmeContent,
 		};
 	} catch (error) {
 		console.error(`Error fetching repo info for ${repoName}:`, error.message);
@@ -165,22 +164,22 @@ ${repoInfo.readme}
 
 Write a natural, conversational description that would fit perfectly after "I was impressed by what you've built." Focus on what makes the project interesting and mention AI/LLM usage if relevant. Keep it under 120 chars and make it sound genuine and personal.`;
 
-		const response = await fetch('https://api.llmgateway.io/v1/chat/completions', {
-			method: 'POST',
+		const response = await fetch("https://api.llmgateway.io/v1/chat/completions", {
+			method: "POST",
 			headers: {
-				'Content-Type': 'application/json',
-				'Authorization': `Bearer ${LLMGATEWAY_API_KEY}`,
-				'X-LLMGateway-Kind': 'bulk-email-summary',
+				"Content-Type": "application/json",
+				"Authorization": `Bearer ${LLMGATEWAY_API_KEY}`,
+				"X-LLMGateway-Kind": "bulk-email-summary",
 			},
 			body: JSON.stringify({
-				model: 'gpt-5-mini',
+				model: "gpt-5-mini",
 				messages: [
 					{
-						role: 'user',
-						content: prompt
-					}
-				]
-			})
+						role: "user",
+						content: prompt,
+					},
+				],
+			}),
 		});
 
 		if (!response.ok) {
@@ -211,7 +210,7 @@ Unlike hosted services, LLMGateway can be deployed in your own environment, givi
 
 We also have a hosted version of LLMGateway to get started quickly. Just reply here with your registered email and I'll give you a few credits for free to try it out.
 
-Best regards,
+Cheers,
 ${FROM_NAME}
 https://llmgateway.io`;
 }
@@ -222,11 +221,11 @@ async function sendEmail(transporter, toEmail, emailContent) {
 		const mailOptions = {
 			from: {
 				name: FROM_NAME,
-				address: FROM_EMAIL
+				address: FROM_EMAIL,
 			},
 			to: toEmail,
 			subject: EMAIL_SUBJECT,
-			text: emailContent
+			text: emailContent,
 		};
 
 		const result = await transporter.sendMail(mailOptions);
@@ -242,7 +241,7 @@ async function sendEmail(transporter, toEmail, emailContent) {
 async function markEmailAsSent(db, email, emailBody) {
 	try {
 		// Update email as sent and save the email body
-		await runQuery(db, 'UPDATE emails SET email_sent = 1, email_body = ? WHERE email = ?', [emailBody, email]);
+		await runQuery(db, "UPDATE emails SET email_sent = 1, email_body = ? WHERE email = ?", [emailBody, email]);
 		console.log(`📝 Marked ${email} as sent and saved email body to database`);
 	} catch (error) {
 		console.error(`Error marking email as sent for ${email}:`, error.message);
@@ -254,18 +253,18 @@ async function main() {
 	let db;
 
 	try {
-		console.log('🚀 Starting email sending process...');
+		console.log("🚀 Starting email sending process...");
 		console.log(`📧 Target: ${EMAIL_COUNT} emails`);
 
 		// Validate required environment variables
 		if (!SMTP_USERNAME || !SMTP_PASSWORD) {
-			throw new Error('SMTP_USERNAME and SMTP_PASSWORD environment variables are required');
+			throw new Error("SMTP_USERNAME and SMTP_PASSWORD environment variables are required");
 		}
 		if (!LLMGATEWAY_API_KEY) {
-			throw new Error('LLMGATEWAY_API_KEY environment variable is required');
+			throw new Error("LLMGATEWAY_API_KEY environment variable is required");
 		}
 		if (!GITHUB_TOKEN) {
-			throw new Error('GITHUB_TOKEN environment variable is required');
+			throw new Error("GITHUB_TOKEN environment variable is required");
 		}
 
 		// Initialize database connection
@@ -277,7 +276,7 @@ async function main() {
 		console.log(`📋 Found ${emailsToSend.length} emails to send`);
 
 		if (emailsToSend.length === 0) {
-			console.log('No emails to send. All available emails may have been sent already or flagged as ignore.');
+			console.log("No emails to send. All available emails may have been sent already or flagged as ignore.");
 			return;
 		}
 
@@ -287,7 +286,7 @@ async function main() {
 		// Verify SMTP connection
 		try {
 			await transporter.verify();
-			console.log('📬 SMTP connection verified successfully');
+			console.log("📬 SMTP connection verified successfully");
 		} catch (error) {
 			throw new Error(`SMTP connection failed: ${error.message}`);
 		}
@@ -333,28 +332,28 @@ async function main() {
 
 			// Rate limiting - wait 2 seconds between emails (increased due to API calls)
 			if (i < emailsToSend.length - 1) {
-				console.log('⏳ Waiting 2 seconds...');
+				console.log("⏳ Waiting 2 seconds...");
 				await new Promise(resolve => setTimeout(resolve, 2000));
 			}
 		}
 
 		// Summary
-		console.log('\n=== EMAIL SENDING SUMMARY ===');
+		console.log("\n=== EMAIL SENDING SUMMARY ===");
 		console.log(`✅ Successfully sent: ${successCount}`);
 		console.log(`❌ Failed to send: ${failureCount}`);
 		console.log(`📊 Total processed: ${emailsToSend.length}`);
 
 	} catch (error) {
-		console.error('❌ Error in email sending process:', error.message);
+		console.error("❌ Error in email sending process:", error.message);
 		process.exit(1);
 	} finally {
 		// Close database connection
 		if (db) {
 			try {
 				await closeDatabase(db);
-				console.log('📁 Database connection closed');
+				console.log("📁 Database connection closed");
 			} catch (err) {
-				console.error('Error closing database:', err.message);
+				console.error("Error closing database:", err.message);
 			}
 		}
 	}
