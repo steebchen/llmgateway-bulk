@@ -12,6 +12,15 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const EMAIL_COUNT = parseInt(process.env.EMAIL_COUNT) || 10;
 const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, "contributor_emails.db");
 
+// Close API configuration (optional)
+const CLOSE_API_KEY = process.env.CLOSE_API_KEY;
+const CLOSE_API_URL = process.env.CLOSE_API_URL || "https://api.close.com/api/v1";
+// const CLOSE_CONTACT_ID = process.env.CLOSE_CONTACT_ID;
+// const CLOSE_USER_ID = process.env.CLOSE_USER_ID;
+// const CLOSE_LEAD_ID = process.env.CLOSE_LEAD_ID;
+const CLOSE_EMAIL_ACCOUNT_ID = process.env.CLOSE_EMAIL_ACCOUNT_ID;
+const USE_CLOSE_API = process.env.USE_CLOSE_API === "true";
+
 // Email configuration
 const FROM_EMAIL = process.env.FROM_EMAIL || "hello@usellmgateway.com";
 const FROM_NAME = process.env.FROM_NAME || "Luca from LLMGateway";
@@ -260,6 +269,51 @@ async function sendEmail(transporter, toEmail, emailContent) {
 	}
 }
 
+// Send email using Close API
+async function sendEmailViaClose(toEmail, emailContent) {
+	try {
+		const emailPayload = {
+			// contact_id: CLOSE_CONTACT_ID,
+			// user_id: CLOSE_USER_ID,
+			// lead_id: CLOSE_LEAD_ID,
+			direction: "outgoing",
+			created_by_name: FROM_NAME,
+			subject: EMAIL_SUBJECT,
+			sender: FROM_EMAIL,
+			to: [toEmail],
+			bcc: [],
+			cc: [],
+			status: "sent",
+			body_text: emailContent,
+			body_html: emailContent.replace(/\n/g, "<br>"),
+			attachments: [],
+			email_account_id: CLOSE_EMAIL_ACCOUNT_ID,
+			template_id: null
+		};
+
+		const response = await fetch(`${CLOSE_API_URL}/activity/email/`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"Authorization": `Basic ${Buffer.from(`${CLOSE_API_KEY}:`).toString("base64")}`,
+			},
+			body: JSON.stringify(emailPayload),
+		});
+
+		if (!response.ok) {
+			const errorData = await response.text();
+			throw new Error(`Close API error: ${response.status} - ${errorData}`);
+		}
+
+		const result = await response.json();
+		console.log(`✅ Email sent via Close API to ${toEmail} - ID: ${result.id}`);
+		return true;
+	} catch (error) {
+		console.error(`❌ Failed to send email via Close API to ${toEmail}:`, error.message);
+		return false;
+	}
+}
+
 // Mark email as sent and save email body in database
 async function markEmailAsSent(db, email, emailBody) {
 	try {
@@ -280,8 +334,16 @@ async function main() {
 		console.log(`📧 Target: ${EMAIL_COUNT} emails`);
 
 		// Validate required environment variables
-		if (!SMTP_USERNAME || !SMTP_PASSWORD) {
-			throw new Error("SMTP_USERNAME and SMTP_PASSWORD environment variables are required");
+		if (USE_CLOSE_API) {
+			if (!CLOSE_API_KEY || /*!CLOSE_CONTACT_ID || !CLOSE_USER_ID || !CLOSE_LEAD_ID ||*/ !CLOSE_EMAIL_ACCOUNT_ID) {
+				throw new Error("When USE_CLOSE_API=true, CLOSE_API_KEY, CLOSE_CONTACT_ID, CLOSE_USER_ID, CLOSE_LEAD_ID, and CLOSE_EMAIL_ACCOUNT_ID environment variables are required");
+			}
+			console.log("📧 Using Close API for email sending");
+		} else {
+			if (!SMTP_USERNAME || !SMTP_PASSWORD) {
+				throw new Error("SMTP_USERNAME and SMTP_PASSWORD environment variables are required when not using Close API");
+			}
+			console.log("📧 Using SMTP for email sending");
 		}
 		if (!LLMGATEWAY_API_KEY) {
 			throw new Error("LLMGATEWAY_API_KEY environment variable is required");
@@ -303,15 +365,18 @@ async function main() {
 			return;
 		}
 
-		// Initialize nodemailer transporter
-		const transporter = createMailTransporter();
+		// Initialize email service
+		let transporter = null;
+		if (!USE_CLOSE_API) {
+			transporter = createMailTransporter();
 
-		// Verify SMTP connection
-		try {
-			await transporter.verify();
-			console.log("📬 SMTP connection verified successfully");
-		} catch (error) {
-			throw new Error(`SMTP connection failed: ${error.message}`);
+			// Verify SMTP connection
+			try {
+				await transporter.verify();
+				console.log("📬 SMTP connection verified successfully");
+			} catch (error) {
+				throw new Error(`SMTP connection failed: ${error.message}`);
+			}
 		}
 
 		// Send emails
@@ -345,7 +410,9 @@ async function main() {
 
 			// Send email
 			console.log(`📧 Sending personalized email to ${email}...`);
-			const success = await sendEmail(transporter, email, personalizedEmail);
+			const success = USE_CLOSE_API
+				? await sendEmailViaClose(email, personalizedEmail)
+				: await sendEmail(transporter, email, personalizedEmail);
 
 			if (success) {
 				await markEmailAsSent(db, email, personalizedEmail);
