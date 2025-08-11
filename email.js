@@ -203,6 +203,28 @@ Write a natural, conversational description that would fit perfectly after "I wa
 	}
 }
 
+// Generate dynamic email subject based on keyword
+function generateEmailSubject(keyword) {
+	if (!keyword) {
+		return EMAIL_SUBJECT || "Discover LLMGateway - The Open Source AI Gateway";
+	}
+
+	const keywordLower = keyword.toLowerCase();
+
+	if (keywordLower === "openrouter") {
+		return "The actual \"Open\" alternative to OpenRouter";
+	} else if (keywordLower === "openai") {
+		return "Beyond OpenAI - Multi-provider AI Gateway";
+	} else if (keywordLower === "anthropic" || keywordLower === "claude") {
+		return "Multi-model AI Gateway - Beyond Single Providers";
+	} else if (keywordLower === "ollama") {
+		return "Expand ollama and gain insights";
+	} else {
+		// Generic subject for other keywords
+		return `Enhance Your ${keyword} Project with Multi-Model AI`;
+	}
+}
+
 // Generate personalized email content
 function generatePersonalizedEmail(repoAnalysis, repoInfo, keyword) {
 	const isOpenRouter = keyword && keyword.toLowerCase() === "openrouter";
@@ -248,15 +270,16 @@ https://llmgateway.io`;
 }
 
 // Send personalized email using nodemailer
-async function sendEmail(transporter, toEmail, emailContent) {
+async function sendEmail(transporter, toEmail, emailContent, keyword) {
 	try {
+		const dynamicSubject = generateEmailSubject(keyword);
 		const mailOptions = {
 			from: {
 				name: FROM_NAME,
 				address: FROM_EMAIL,
 			},
 			to: toEmail,
-			subject: EMAIL_SUBJECT,
+			subject: dynamicSubject,
 			text: emailContent,
 		};
 
@@ -388,7 +411,7 @@ async function findOrCreateLead(email, repoInfo) {
 }
 
 // Send email using Close API
-async function sendEmailViaClose(toEmail, emailContent, repoInfo) {
+async function sendEmailViaClose(toEmail, emailContent, repoInfo, keyword) {
 	try {
 		// Find or create lead first
 		const lead = await findOrCreateLead(toEmail, repoInfo);
@@ -402,12 +425,13 @@ async function sendEmailViaClose(toEmail, emailContent, repoInfo) {
 			throw new Error(`No contact found for email ${toEmail} on lead ${lead.id}`);
 		}
 
+		const dynamicSubject = generateEmailSubject(keyword);
 		const emailPayload = {
 			contact_id: contact.id,
 			lead_id: lead.id,
 			direction: "outgoing",
 			created_by_name: FROM_NAME,
-			subject: EMAIL_SUBJECT,
+			subject: dynamicSubject,
 			sender: FROM_EMAIL,
 			to: [toEmail],
 			bcc: [],
@@ -542,8 +566,8 @@ async function main() {
 			// Send email
 			console.log(`📧 Sending personalized email to ${email}...`);
 			const success = USE_CLOSE_API
-				? await sendEmailViaClose(email, personalizedEmail, repoInfo)
-				: await sendEmail(transporter, email, personalizedEmail);
+				? await sendEmailViaClose(email, personalizedEmail, repoInfo, keyword)
+				: await sendEmail(transporter, email, personalizedEmail, keyword);
 
 			if (success) {
 				await markEmailAsSent(db, email, personalizedEmail);
