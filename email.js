@@ -578,8 +578,8 @@ async function main() {
 
 			// Rate limiting - wait 2 seconds between emails (increased due to API calls)
 			if (i < emailsToSend.length - 1) {
-				console.log("⏳ Waiting 2 seconds...");
-				await new Promise(resolve => setTimeout(resolve, 2000));
+				console.log("⏳ Waiting 2 minutes...");
+				await new Promise(resolve => setTimeout(resolve, 120000));
 			}
 		}
 
