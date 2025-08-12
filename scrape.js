@@ -672,119 +672,15 @@ async function searchRepositoriesWithStats(keyword) {
 	}
 }
 
-// Function to backfill commit counts for existing emails
-async function backfillCommitCounts() {
-	try {
-		console.log("🔄 Starting backfill of commit counts for existing emails...");
-
-		// Get all emails that don't have commit counts and are not ignored
-		const emailsToBackfill = await new Promise((resolve, reject) => {
-			db.all("SELECT email, repo_name FROM emails WHERE commits IS NULL AND ignore = 0", (err, rows) => {
-				if (err) {
-					reject(err);
-				} else {
-					resolve(rows);
-				}
-			});
-		});
-
-		if (emailsToBackfill.length === 0) {
-			console.log("✅ No emails need backfilling");
-			return;
-		}
-
-		console.log(`Found ${emailsToBackfill.length} emails to backfill`);
-
-		const headers = {
-			"Accept": "application/vnd.github+json",
-			"Authorization": `Bearer ${GITHUB_TOKEN}`,
-		};
-
-		const emailCommitCounts = new Map(); // email -> total commits across all repos
-
-		// Group by repo to minimize API calls
-		const repoEmails = new Map();
-		for (const row of emailsToBackfill) {
-			if (!repoEmails.has(row.repo_name)) {
-				repoEmails.set(row.repo_name, new Set());
-			}
-			repoEmails.get(row.repo_name).add(row.email);
-		}
-
-		let processedRepos = 0;
-		for (const [repoName, emails] of repoEmails) {
-			processedRepos++;
-			console.log(`[${processedRepos}/${repoEmails.size}] Processing ${repoName}...`);
-
-			try {
-				// Rate limiting
-				await sleep(1000);
-
-				const commitsUrl = `https://api.github.com/repos/${repoName}/commits?per_page=${COMMITS_PER_REPO}`;
-				const commitsResponse = await fetch(commitsUrl, { headers });
-
-				if (!commitsResponse.ok) {
-					console.log(`  Skipping ${repoName} (${commitsResponse.status})`);
-					continue;
-				}
-
-				const commits = await commitsResponse.json();
-				const repoCommitCounts = new Map(); // email -> commit count in this repo
-
-				// Count commits per contributor in this repo
-				for (const commit of commits) {
-					if (commit.commit && commit.commit.author && commit.commit.author.email) {
-						const email = commit.commit.author.email;
-						if (emails.has(email)) {
-							repoCommitCounts.set(email, (repoCommitCounts.get(email) || 0) + 1);
-						}
-					}
-				}
-
-				// Update database for each email in this repo
-				for (const [email, commitCount] of repoCommitCounts) {
-					console.log(`  Updating ${email}: ${commitCount} commits`);
-					await runQuery(db, "UPDATE emails SET commits = ? WHERE email = ? AND repo_name = ?", [commitCount, email, repoName]);
-				}
-
-				console.log(`  Found commits for ${repoCommitCounts.size} contributors`);
-
-			} catch (error) {
-				console.log(`  Error processing ${repoName}: ${error.message}`);
-			}
-		}
-
-		console.log("✅ Backfill complete");
-
-	} catch (error) {
-		console.error("Error during backfill:", error.message);
-		throw error;
-	}
-}
-
 // Main function to run the application
 async function main() {
 	try {
-		// Check if backfill flag is provided
-		const isBackfill = process.argv.includes('--backfill');
-
-		if (isBackfill) {
-			console.log("Starting commit count backfill...");
-		} else {
-			console.log("Starting contributor analysis...");
-		}
+		console.log("Starting contributor analysis...");
 
 		// Initialize database first
 		await initializeDatabase();
 
-		if (isBackfill) {
-			// Run backfill instead of normal scraping
-			await backfillCommitCounts();
-			process.exit(0);
-		} else {
-			// Then run the search
-			await searchRepositoriesWithStats(KEYWORD);
-		}
+		await searchRepositoriesWithStats(KEYWORD);
 
 		// Close the database connection when done
 		console.log("Closing database connection...");
