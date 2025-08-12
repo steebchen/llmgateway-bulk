@@ -202,6 +202,18 @@ async function initializeDatabase() {
 			}
 		}
 
+		// Add commits column if it doesn't exist (for existing databases)
+		try {
+			await runQuery(db, `ALTER TABLE emails
+				ADD COLUMN commits INTEGER`);
+			console.log("Added commits column to existing emails table");
+		} catch (err) {
+			// Column already exists, ignore the error
+			if (!err.message.includes("duplicate column name")) {
+				throw err;
+			}
+		}
+
 		// Create state table to store the last request information
 		await runQuery(db, `
 			CREATE TABLE IF NOT EXISTS request_state
@@ -234,14 +246,14 @@ async function initializeDatabase() {
 }
 
 // Function to save email to database (only first occurrence)
-async function saveEmail(email, repoName, keyword, fullName = null, githubStars = null) {
+async function saveEmail(email, repoName, keyword, fullName = null, githubStars = null, commits = null) {
 	// Determine if email should be ignored (contains "noreply" or doesn't have @)
 	const shouldIgnore = email.toLowerCase().includes("noreply") || !email.toLowerCase().includes("@");
 
 	try {
 		// Use INSERT OR IGNORE to prevent duplicate entries - only saves first occurrence
-		const stmt = prepareStatement(db, "INSERT OR IGNORE INTO emails (email, repo_name, keyword, ignore, full_name, github_stars) VALUES (?, ?, ?, ?, ?, ?)");
-		const result = await runStatement(stmt, [email, repoName, keyword, shouldIgnore ? 1 : 0, fullName, githubStars]);
+		const stmt = prepareStatement(db, "INSERT OR IGNORE INTO emails (email, repo_name, keyword, ignore, full_name, github_stars, commits) VALUES (?, ?, ?, ?, ?, ?, ?)");
+		const result = await runStatement(stmt, [email, repoName, keyword, shouldIgnore ? 1 : 0, fullName, githubStars, commits]);
 		await finalizeStatement(stmt);
 
 		// result.changes tells us if a row was inserted (1) or not (0)
@@ -252,7 +264,7 @@ async function saveEmail(email, repoName, keyword, fullName = null, githubStars 
 			if (shouldIgnore) {
 				console.log(`  Saved noreply email with ignore flag: ${email} (${fullName || email})`);
 			} else {
-				console.log(`  Saved email: ${email} (${fullName || email}) - ${githubStars || 0} stars`);
+				console.log(`  Saved email: ${email} (${fullName || email}) - ${githubStars || 0} stars, ${commits || 0} commits`);
 			}
 		}
 	} catch (error) {
@@ -501,35 +513,53 @@ async function searchRepositoriesWithStats(keyword) {
 
 					const commits = await commitsResponse.json();
 
-					// Process commits and save emails immediately
+					// First pass: count commits per contributor
+					const repoContributors = new Map(); // email -> { count, fullName, lastCommitDate }
+
 					for (const commit of commits) {
 						if (commit.commit && commit.commit.author && commit.commit.author.email) {
 							const email = commit.commit.author.email;
 							const commitDate = new Date(commit.commit.author.date);
-							// Extract full name from commit, fallback to email if not available
 							const fullName = commit.commit.author.name || email;
 
-							// Save to database immediately when first encountered
-							if (!contributorStats.has(email)) {
-								contributorStats.set(email, {
+							if (!repoContributors.has(email)) {
+								repoContributors.set(email, {
 									count: 0,
-									repos: new Set(),
-									lastCommitDate: commitDate,
 									fullName: fullName,
-									isNoreply: email.toLowerCase().includes("noreply") || !email.toLowerCase().includes("@"),
+									lastCommitDate: commitDate,
 								});
-
-								// Save to database immediately with full name and GitHub stars
-								await saveEmail(email, repo.full_name, keyword, fullName, repo.stargazers_count);
 							}
 
-							const stats = contributorStats.get(email);
-							stats.count++;
-							stats.repos.add(repo.full_name);
-
-							if (commitDate > stats.lastCommitDate) {
-								stats.lastCommitDate = commitDate;
+							const repoStats = repoContributors.get(email);
+							repoStats.count++;
+							if (commitDate > repoStats.lastCommitDate) {
+								repoStats.lastCommitDate = commitDate;
 							}
+						}
+					}
+
+					// Second pass: save emails with commit counts
+					for (const [email, repoStats] of repoContributors) {
+						// Save to database immediately when first encountered
+						if (!contributorStats.has(email)) {
+							contributorStats.set(email, {
+								count: 0,
+								repos: new Set(),
+								lastCommitDate: repoStats.lastCommitDate,
+								fullName: repoStats.fullName,
+								isNoreply: email.toLowerCase().includes("noreply") || !email.toLowerCase().includes("@"),
+							});
+
+							// Save to database immediately with full name, GitHub stars, and commit count
+							await saveEmail(email, repo.full_name, keyword, repoStats.fullName, repo.stargazers_count, repoStats.count);
+						}
+
+						const stats = contributorStats.get(email);
+						stats.count += repoStats.count;
+						stats.repos.add(repo.full_name);
+
+						if (repoStats.lastCommitDate > stats.lastCommitDate) {
+							stats.lastCommitDate = repoStats.lastCommitDate;
 						}
 					}
 
@@ -642,16 +672,119 @@ async function searchRepositoriesWithStats(keyword) {
 	}
 }
 
+// Function to backfill commit counts for existing emails
+async function backfillCommitCounts() {
+	try {
+		console.log("🔄 Starting backfill of commit counts for existing emails...");
+
+		// Get all emails that don't have commit counts and are not ignored
+		const emailsToBackfill = await new Promise((resolve, reject) => {
+			db.all("SELECT email, repo_name FROM emails WHERE commits IS NULL AND ignore = 0", (err, rows) => {
+				if (err) {
+					reject(err);
+				} else {
+					resolve(rows);
+				}
+			});
+		});
+
+		if (emailsToBackfill.length === 0) {
+			console.log("✅ No emails need backfilling");
+			return;
+		}
+
+		console.log(`Found ${emailsToBackfill.length} emails to backfill`);
+
+		const headers = {
+			"Accept": "application/vnd.github+json",
+			"Authorization": `Bearer ${GITHUB_TOKEN}`,
+		};
+
+		const emailCommitCounts = new Map(); // email -> total commits across all repos
+
+		// Group by repo to minimize API calls
+		const repoEmails = new Map();
+		for (const row of emailsToBackfill) {
+			if (!repoEmails.has(row.repo_name)) {
+				repoEmails.set(row.repo_name, new Set());
+			}
+			repoEmails.get(row.repo_name).add(row.email);
+		}
+
+		let processedRepos = 0;
+		for (const [repoName, emails] of repoEmails) {
+			processedRepos++;
+			console.log(`[${processedRepos}/${repoEmails.size}] Processing ${repoName}...`);
+
+			try {
+				// Rate limiting
+				await sleep(1000);
+
+				const commitsUrl = `https://api.github.com/repos/${repoName}/commits?per_page=${COMMITS_PER_REPO}`;
+				const commitsResponse = await fetch(commitsUrl, { headers });
+
+				if (!commitsResponse.ok) {
+					console.log(`  Skipping ${repoName} (${commitsResponse.status})`);
+					continue;
+				}
+
+				const commits = await commitsResponse.json();
+				const repoCommitCounts = new Map(); // email -> commit count in this repo
+
+				// Count commits per contributor in this repo
+				for (const commit of commits) {
+					if (commit.commit && commit.commit.author && commit.commit.author.email) {
+						const email = commit.commit.author.email;
+						if (emails.has(email)) {
+							repoCommitCounts.set(email, (repoCommitCounts.get(email) || 0) + 1);
+						}
+					}
+				}
+
+				// Update database for each email in this repo
+				for (const [email, commitCount] of repoCommitCounts) {
+					console.log(`  Updating ${email}: ${commitCount} commits`);
+					await runQuery(db, "UPDATE emails SET commits = ? WHERE email = ? AND repo_name = ?", [commitCount, email, repoName]);
+				}
+
+				console.log(`  Found commits for ${repoCommitCounts.size} contributors`);
+
+			} catch (error) {
+				console.log(`  Error processing ${repoName}: ${error.message}`);
+			}
+		}
+
+		console.log("✅ Backfill complete");
+
+	} catch (error) {
+		console.error("Error during backfill:", error.message);
+		throw error;
+	}
+}
+
 // Main function to run the application
 async function main() {
 	try {
-		console.log("Starting contributor analysis...");
+		// Check if backfill flag is provided
+		const isBackfill = process.argv.includes('--backfill');
+
+		if (isBackfill) {
+			console.log("Starting commit count backfill...");
+		} else {
+			console.log("Starting contributor analysis...");
+		}
 
 		// Initialize database first
 		await initializeDatabase();
 
-		// Then run the search
-		await searchRepositoriesWithStats(KEYWORD);
+		if (isBackfill) {
+			// Run backfill instead of normal scraping
+			await backfillCommitCounts();
+			process.exit(0);
+		} else {
+			// Then run the search
+			await searchRepositoriesWithStats(KEYWORD);
+		}
 
 		// Close the database connection when done
 		console.log("Closing database connection...");
