@@ -88,18 +88,38 @@ function createMailTransporter() {
 }
 
 // Fetch unique email addresses with repo info from database
+// Only select top 3 contributors per repository, sorted by commit count descending
 async function fetchEmailsToSend(db, count) {
 	try {
 		const query = `
-			SELECT DISTINCT email, repo_name, keyword, github_stars, full_name
-			FROM emails
-			WHERE ignore = 0
-				AND approved = 0
-				AND email_sent = 0
-				AND email NOT LIKE '%noreply%'
-				AND email LIKE '%@%'
-				AND repo_name IS NOT NULL
-			ORDER BY github_stars DESC, created_at DESC LIMIT ?
+			WITH RankedEmails AS (
+				SELECT 
+					email, 
+					repo_name, 
+					keyword, 
+					github_stars, 
+					full_name,
+					commits,
+					ROW_NUMBER() OVER (
+						PARTITION BY repo_name 
+						ORDER BY commits DESC, created_at DESC
+					) as rank
+				FROM emails
+				WHERE ignore = 0
+					AND approved = 0
+					AND email NOT LIKE '%noreply%'
+					AND email LIKE '%@%'
+					AND repo_name IS NOT NULL
+					AND commits IS NOT NULL
+			)
+			SELECT email, repo_name, keyword, github_stars, full_name, commits
+			FROM RankedEmails
+			WHERE rank <= 3
+				AND email NOT IN (
+					SELECT email FROM emails WHERE email_sent = 1
+				)
+			ORDER BY github_stars DESC, commits DESC, repo_name, rank
+			LIMIT ?
 		`;
 
 		const emails = await allQuery(db, query, [count]);
@@ -543,8 +563,9 @@ async function main() {
 			const keyword = emailRecord.keyword;
 			const githubStars = emailRecord.github_stars || 0;
 			const fullName = emailRecord.full_name;
+			const commits = emailRecord.commits || 0;
 
-			console.log(`\n[${i + 1}/${emailsToSend.length}] Processing: ${fullName || email} (${email}) - ${repoName} [⭐${githubStars}] [${keyword}]`);
+			console.log(`\n[${i + 1}/${emailsToSend.length}] Processing: ${fullName || email} (${email}) - ${repoName} [⭐${githubStars}] [📝${commits} commits] [${keyword}]`);
 
 			// Fetch and analyze repository
 			console.log(`📖 Fetching repository info for ${repoName}...`);
