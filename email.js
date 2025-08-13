@@ -93,15 +93,15 @@ async function fetchEmailsToSend(db, count) {
 	try {
 		const query = `
 			WITH RankedEmails AS (
-				SELECT 
-					email, 
-					repo_name, 
-					keyword, 
-					github_stars, 
+				SELECT
+					email,
+					repo_name,
+					keyword,
+					github_stars,
 					full_name,
 					commits,
 					ROW_NUMBER() OVER (
-						PARTITION BY repo_name 
+						PARTITION BY repo_name
 						ORDER BY commits DESC, created_at DESC
 					) as rank
 				FROM emails
