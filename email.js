@@ -370,13 +370,13 @@ async function findOrCreateLead(email, repoInfo) {
 		}
 
 		// Now check if contact with this email exists on this lead
-		const contactExists = lead.contacts && lead.contacts.some(contact =>
+		const existingContact = lead.contacts && lead.contacts.find(contact =>
 			contact.emails && contact.emails.some(emailObj => emailObj.email === email),
 		);
 
-		if (contactExists) {
+		if (existingContact) {
 			console.log(`📧 Contact with email ${email} already exists on lead ${lead.id}`);
-			return lead;
+			return { lead, contact: existingContact };
 		}
 
 		// Create new contact for this email on the lead
@@ -407,22 +407,8 @@ async function findOrCreateLead(email, repoInfo) {
 		const newContact = await contactResponse.json();
 		console.log(`✅ Added contact ${email} to lead: ${newContact.id}`);
 
-		// Refresh lead data to include new contact
-		const refreshResponse = await fetch(`${CLOSE_API_URL}/lead/${lead.id}/`, {
-			method: "GET",
-			headers: {
-				"Authorization": `Basic ${Buffer.from(`${CLOSE_API_KEY}:`).toString("base64")}`,
-			},
-		});
-
-		if (refreshResponse.ok) {
-			return await refreshResponse.json();
-		} else {
-			// Fallback: manually add contact to lead object
-			if (!lead.contacts) lead.contacts = [];
-			lead.contacts.push(newContact);
-			return lead;
-		}
+		// Return both lead and the newly created contact
+		return { lead, contact: newContact };
 
 	} catch (error) {
 		console.error(`❌ Error finding/creating lead for ${email} in ${repoInfo?.fullName}:`, error.message);
@@ -434,12 +420,7 @@ async function findOrCreateLead(email, repoInfo) {
 async function sendEmailViaClose(toEmail, emailContent, repoInfo, keyword) {
 	try {
 		// Find or create lead first
-		const lead = await findOrCreateLead(toEmail, repoInfo);
-
-		// Find the specific contact for this email
-		const contact = lead.contacts && lead.contacts.find(contact =>
-			contact.emails && contact.emails.some(emailObj => emailObj.email === toEmail),
-		);
+		const { lead, contact } = await findOrCreateLead(toEmail, repoInfo);
 
 		if (!contact) {
 			throw new Error(`No contact found for email ${toEmail} on lead ${lead.id}`);
