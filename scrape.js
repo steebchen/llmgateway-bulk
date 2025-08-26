@@ -15,6 +15,61 @@ function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Email validation function using rapid-email-verifier API
+async function validateEmail(email) {
+	try {
+		const encodedEmail = encodeURIComponent(email);
+		const response = await fetch(`https://rapid-email-verifier.fly.dev/api/validate?email=${encodedEmail}`);
+
+		if (!response.ok) {
+			console.log(`  ⚠️  Email validation API error for ${email}: ${response.status}`);
+			return { isValid: false, reason: 'API_ERROR' };
+		}
+
+		const data = await response.json();
+		const isValid = data.status === 'VALID';
+
+		if (!isValid) {
+			console.log(`  ❌ Email ${email} is invalid - status: ${data.status}`);
+		}
+
+		return {
+			isValid,
+			reason: isValid ? null : data.status,
+			validationData: data
+		};
+	} catch (error) {
+		console.log(`  ⚠️  Email validation error for ${email}: ${error.message}`);
+		return { isValid: false, reason: 'VALIDATION_ERROR' };
+	}
+}
+
+// Basic email format validation to avoid API calls for obviously invalid emails
+function isBasicEmailValid(email) {
+	// Check for obvious invalid patterns first
+	if (!email || typeof email !== 'string') return false;
+	if (!email.includes('@')) return false;
+	if (email.toLowerCase().includes('noreply')) return false;
+
+	// Check for local network/test emails like "me@hamzas-macbook-air.local"
+	const localPatterns = [
+		/\.local$/i,
+		/@[^.]*\.localdomain$/i,
+		/@localhost/i,
+		/@[^.]*-[^.]*\.(local|localdomain)$/i,
+		/@.*\.lan$/i,
+		/@.*\.internal$/i
+	];
+
+	if (localPatterns.some(pattern => pattern.test(email))) {
+		return false;
+	}
+
+	// Basic email format check
+	const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+	return emailRegex.test(email);
+}
+
 // Utility functions to promisify sqlite3 operations
 function openDatabase(dbPath) {
 	return new Promise((resolve, reject) => {
@@ -247,8 +302,22 @@ async function initializeDatabase() {
 
 // Function to save email to database (only first occurrence)
 async function saveEmail(email, repoName, keyword, fullName = null, githubStars = null, commits = null) {
-	// Determine if email should be ignored (contains "noreply" or doesn't have @)
-	const shouldIgnore = email.toLowerCase().includes("noreply") || !email.toLowerCase().includes("@");
+	// First check basic email format to avoid API calls for obviously invalid emails
+	if (!isBasicEmailValid(email)) {
+		console.log(`  Skipping invalid email format: ${email}`);
+		try {
+			const stmt = prepareStatement(db, "INSERT OR IGNORE INTO emails (email, repo_name, keyword, ignore, full_name, github_stars, commits) VALUES (?, ?, ?, ?, ?, ?, ?)");
+			await runStatement(stmt, [email, repoName, keyword, 1, fullName, githubStars, commits]); // Mark as ignored
+			await finalizeStatement(stmt);
+		} catch (error) {
+			console.error(`  Error saving invalid email ${email}: ${error.message}`);
+		}
+		return;
+	}
+
+	// Validate email using the API
+	const validation = await validateEmail(email);
+	const shouldIgnore = !validation.isValid;
 
 	try {
 		// Use INSERT OR IGNORE to prevent duplicate entries - only saves first occurrence
@@ -262,11 +331,14 @@ async function saveEmail(email, repoName, keyword, fullName = null, githubStars 
 		} else {
 			// New email was inserted
 			if (shouldIgnore) {
-				console.log(`  Saved noreply email with ignore flag: ${email} (${fullName || email})`);
+				console.log(`  Saved invalid email with ignore flag: ${email} (${fullName || email}) - ${validation.reason}`);
 			} else {
-				console.log(`  Saved email: ${email} (${fullName || email}) - ${githubStars || 0} stars, ${commits || 0} commits`);
+				console.log(`  ✅ Saved valid email: ${email} (${fullName || email}) - ${githubStars || 0} stars, ${commits || 0} commits`);
 			}
 		}
+
+		// Add small delay to avoid overwhelming the validation API
+		await sleep(100);
 	} catch (error) {
 		console.error(`  Error saving email ${email}: ${error.message}`);
 	}
