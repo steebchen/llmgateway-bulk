@@ -9,7 +9,7 @@ const SMTP_USERNAME = process.env.SMTP_USERNAME;
 const SMTP_PASSWORD = process.env.SMTP_PASSWORD;
 const LLMGATEWAY_API_KEY = process.env.LLMGATEWAY_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const EMAIL_COUNT = parseInt(process.env.EMAIL_COUNT) || 10;
+const EMAIL_COUNT = parseInt(process.env.EMAIL_COUNT) || 20;
 const DB_PATH = process.env.DB_PATH ? path.join(__dirname, process.env.DB_PATH) : path.join(__dirname, "contributor_emails.db");
 
 // Close API configuration (optional)
