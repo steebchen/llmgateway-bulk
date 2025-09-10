@@ -212,7 +212,8 @@ Write a natural, conversational description that would fit perfectly after "I wa
 		});
 
 		if (!response.ok) {
-			throw new Error(`LLMGateway API error: ${response.status}`);
+			const text = await response.text();
+			throw new Error(`LLMGateway API error: ${response.status} - ${text}`);
 		}
 
 		const data = await response.json();
